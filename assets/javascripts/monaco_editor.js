@@ -1374,9 +1374,83 @@
     }
 
     // Monaco の変更をtextareaに反映（フォーム送信時に値が送られるよう）
+    // syncingフラグで逆方向同期との相互ループを防ぐ。
+    var syncing = false;
     editor.onDidChangeModelContent(function () {
+      if (syncing) { return; }
+      // 自分の書き戻しであることを示すフラグを立てて代入する。
+      // （value setter フックがこれを外部代入と誤検知しないように）
+      syncing = true;
       textarea.value = editor.getValue();
+      syncing = false;
     });
+
+    // ---- 逆方向同期: textarea → Monaco ----
+    // Issue Template プラグイン等の外部スクリプトは、隠れている元textareaの
+    // value を直接書き換えることがある（テンプレート挿入など）。
+    // その変更にMonacoが気づけるよう、textarea側の値が変わっていたら
+    // Monacoへ取り込む。
+    //
+    // force=false の場合、ユーザーがMonacoを編集中（フォーカス保持中）は
+    // setValueでカーソルが飛ぶのを避けるため取り込まない。
+    // force=true（フォーカス取得時）は、触り始めの瞬間なので取り込む。
+    function pullFromTextarea(force) {
+      var tv = textarea.value;
+      if (tv === editor.getValue()) { return; }
+      if (!force && editor.hasTextFocus()) { return; }
+      syncing = true;
+      editor.setValue(tv);
+      syncing = false;
+    }
+
+    // (1) textarea が input/change イベントを発火するタイプに対応
+    textarea.addEventListener('input', function () { pullFromTextarea(false); });
+    textarea.addEventListener('change', function () { pullFromTextarea(false); });
+
+    // (2) value 直接代入（イベントを出さないタイプ）に対応するため、
+    //     Monacoエディタがフォーカスを得た瞬間に値を突き合わせる。
+    //     テンプレ挿入後にユーザーがエディタを触った時点で最新化される。
+    editor.onDidFocusEditorText(function () {
+      pullFromTextarea(true);
+    });
+
+    // (3) さらに確実にするため、フォーム要素の変化（トラッカー変更など）後にも
+    //     突き合わせる。Issue Template はセレクト変更で挿入することが多い。
+    var form = textarea.closest('form');
+    if (form) {
+      form.addEventListener('change', function () {
+        // セレクト変更などの直後、テンプレ挿入が走る時間を少し待ってから取り込む
+        setTimeout(function () { pullFromTextarea(false); }, 50);
+      });
+    }
+
+    // (4) value プロパティへの直接代入を検知する（決定打）。
+    //     Issue Templates 等のプラグインは textarea.value = '...' で
+    //     直接書き込み、input/changeイベントを発火しないことがある。
+    //     その場合 (1)〜(3) では拾えないため、value の setter をフックして
+    //     「誰がどんな方法で代入しても」検知できるようにする。
+    //     ネイティブの getter/setter は保持して本来の動作を壊さない。
+    try {
+      var proto = window.HTMLTextAreaElement && window.HTMLTextAreaElement.prototype;
+      var desc = proto && Object.getOwnPropertyDescriptor(proto, 'value');
+      if (desc && desc.get && desc.set) {
+        Object.defineProperty(textarea, 'value', {
+          configurable: true,
+          get: function () { return desc.get.call(this); },
+          set: function (v) {
+            desc.set.call(this, v); // 本来の代入を実行
+            // 自分(Monaco→textarea)の書き戻し中は無視。
+            // それ以外（外部からの代入）はMonacoへ取り込む。
+            if (!syncing) {
+              // 同期実行だとsetValue中に他処理と競合しうるため次tickで
+              setTimeout(function () { pullFromTextarea(false); }, 0);
+            }
+          }
+        });
+      }
+    } catch (e) {
+      // defineProperty が失敗しても (1)〜(3) で可能な範囲はカバーする
+    }
 
     // ---- プレビュー更新 ----
     var previewTimer = null;
