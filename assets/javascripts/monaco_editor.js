@@ -84,6 +84,66 @@
   }
 
   // ============================================================
+  // オーバーフローウィジェットの配置先ノード（エディタ毎・wrapper内）
+  // ============================================================
+  // fixedOverflowWidgets: true のとき、Monacoはホバー・補完・詳細パネルを
+  // この要素の中に絶対配置する。
+  //
+  // 配置先を「そのエディタの wrapper の中」に作るのが要点:
+  //   - body直下だと、ネイティブFullscreen API が全画面化した wrapper の
+  //     子孫しか描画しないため、フルスクリーン中に補完/ツールチップが
+  //     まったく出なくなる。wrapper内なら一緒に全画面表示される。
+  //   - position:fixed + inset:0 でビューポートに重ね、Monacoが書き込む
+  //     top/left をビューポート座標に一致させる（詳細パネルが画面外へ
+  //     飛ぶ問題の解消）。
+  //   - .monaco-editor クラスを付けてウィジェットCSSのスコープを確保する
+  //     （無いと二重表示・透け等の崩れが出る）。
+  function createOverflowWidgetsNode(wrapper, themeName) {
+    var el = document.createElement('div');
+    el.className = 'monaco-editor monaco-overflow-widgets-root';
+    // 配置先ノードにもテーマのベースクラス(vs / vs-dark)を付ける。
+    // 補完候補の色などテーマ別CSSは .monaco-editor.vs-dark ... で
+    // スコープしているため、このノードに vs-dark が無いと、ウィジェットが
+    // ここへ配置されたとき色が当たらない（暗背景で暗文字になる）。
+    var isDark = /dark/i.test(themeName || '');
+    el.classList.add(isDark ? 'vs-dark' : 'vs');
+    el.style.position = 'fixed';
+    el.style.top = '0';
+    el.style.left = '0';
+    el.style.zIndex = '50000';
+    // pointer-events は CSS 側で制御（コンテナ none / 子 auto）。
+
+    wrapper.appendChild(el);
+
+    // --- Monaco v0.52 の座標系ズレ補正（詳細パネルのみ） ---
+    // この配置先ノードの中で、Monacoは用途別に2つの入れ物を作る:
+    //   .overflowingContentWidgets … 補完リスト本体・ホバー（ビューポート座標。正しい）
+    //   .overflowingOverlayWidgets … 補完の詳細パネル(.suggest-details-container)
+    //                                 こちらだけ top にページ絶対座標(スクロール込み)が
+    //                                 入り、fixed基準とズレて画面外(例 top:5001px)へ飛ぶ。
+    // そこで overlay 側の入れ物だけを top:-scrollY ぶん持ち上げて相殺する。
+    //   子の実画面位置 = overlay top(-scrollY) + パネル top(ページ絶対)
+    //                  = ページ絶対 - scrollY = ビューポート座標 ✓
+    // content 側（補完本体・ホバー）には触れないので、それらの位置は不変。
+    function syncOverlayOffset() {
+      var overlay = el.querySelector('.overflowingOverlayWidgets');
+      if (!overlay) { return; }
+      // 入れ物自体は元々 top:0/relative 等。fixedなノード内で transform を
+      // 使って持ち上げる（レイアウトに影響しない・GPU合成で軽い）。
+      var y = window.scrollY || window.pageYOffset || 0;
+      overlay.style.transform = 'translateY(' + (-y) + 'px)';
+    }
+    // overlay は遅延生成されるので、スクロール/リサイズの度に補正し、
+    // 初回生成タイミングを取りこぼさないよう軽いポーリングでも追従する。
+    window.addEventListener('scroll', syncOverlayOffset, { passive: true });
+    window.addEventListener('resize', syncOverlayOffset, { passive: true });
+    // 補完が開くたびに overlay が作られる/位置が変わるため、こまめに同期。
+    setInterval(syncOverlayOffset, 150);
+
+    return el;
+  }
+
+  // ============================================================
   // テキストフォーマット判定（Markdown / Textile）
   // ============================================================
   // Redmineのtextareaは data-autofill-text-formatting-param に
@@ -219,6 +279,7 @@
         registerTextileLanguage(window.monaco);
         registerCustomThemes(window.monaco);
         registerMentionCompletion(window.monaco);
+        registerMacroCompletion(window.monaco);
         done();
       }, function () {
         // 一部失敗しても続行（存在しない言語があっても無視）
@@ -227,6 +288,7 @@
         registerTextileLanguage(window.monaco);
         registerCustomThemes(window.monaco);
         registerMentionCompletion(window.monaco);
+        registerMacroCompletion(window.monaco);
         done();
       });
     } catch (e) {
@@ -565,6 +627,210 @@
   var MENTION_RESOLVE_CMD = 'monacoEditor.resolveMention';
 
 
+  // ============================================================
+  // {{マクロ}} 入力補完（CompletionItemProvider）
+  // ============================================================
+  // {{ を打つと、このRedmineインスタンスで使えるマクロ（本体組込み＋
+  // 他プラグインが追加したカスタムマクロ）を候補に出す。
+  //
+  // 候補情報は起動時に1回だけ /monaco_editor/macros から取得して
+  // メモリにキャッシュする（タイピングのたびに通信しない）。
+  // エンドポイントは {{macro_list}} と同じ available_macros を返すため、
+  // dmsf・drawio・自作の tip/note 等もすべて自動で候補に乗る。
+  //
+  // 表示の住み分け:
+  //   detail        … descの1行目（候補リスト右の短い説明）
+  //   documentation … descの全文（候補が絞られると右に展開。長文OK）
+  //
+  // メンション補完と別系統なので両立する（triggerCharactersが違う）。
+
+  // マクロ一覧のキャッシュ。null=未取得 / [] =取得済み(空) / [...]=取得済み。
+  var macroListCache = null;
+  var macroFetchStarted = false;
+
+  // 起動時に1回だけ取得を試みる。失敗しても黙って諦める（補完が出ないだけ）。
+  function prefetchMacros() {
+    if (macroFetchStarted) { return; }
+    macroFetchStarted = true;
+
+    // REST API(.json) 無効環境でも通るよう、拡張子なしのプラグイン
+    // 独自ルートを叩く。Acceptで JSON を要求する。
+    fetch('/monaco_editor/macros', {
+      method: 'GET',
+      headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      credentials: 'same-origin'
+    })
+      .then(function (res) {
+        if (!res.ok) { throw new Error('HTTP ' + res.status); }
+        return res.json();
+      })
+      .then(function (list) {
+        macroListCache = Array.isArray(list) ? list : [];
+      })
+      .catch(function () {
+        // 取得失敗時は空配列にしておく（再取得はしない）。
+        macroListCache = [];
+      });
+  }
+
+  var macroProviderRegistered = false;
+
+  function registerMacroCompletion(monacoInstance) {
+    if (macroProviderRegistered) { return; }
+    macroProviderRegistered = true;
+
+    // 取得を開始（非同期。候補が出るまでに間に合わなければ次回入力で出る）
+    prefetchMacros();
+
+    // markdown / textile 両方で効かせる。
+    ['markdown', 'textile'].forEach(function (lang) {
+      monacoInstance.languages.registerCompletionItemProvider(lang, {
+        // 2文字目の { で発火させる（{{ の検出はprovide側で行う）
+        triggerCharacters: ['{'],
+        provideCompletionItems: function (model, position) {
+          if (!macroListCache || macroListCache.length === 0) {
+            // まだ取得できていない場合は何も出さない（次の入力で再評価される）
+            return { suggestions: [] };
+          }
+
+          var lineText = model.getValueInRange({
+            startLineNumber: position.lineNumber, startColumn: 1,
+            endLineNumber: position.lineNumber, endColumn: position.column
+          });
+
+          // カーソル直前の {{<入力中のマクロ名> を検出。
+          // 既に開き括弧の後（{{macro( ... ）に入っている場合は出さない。
+          var m = /\{\{([a-zA-Z0-9_]*)$/.exec(lineText);
+          if (!m) { return { suggestions: [] }; }
+
+          var typed = m[1];                              // {{ の後ろに打った文字
+          var startCol = position.column - typed.length; // マクロ名の開始位置（{{の直後）
+
+          var range = {
+            startLineNumber: position.lineNumber, startColumn: startCol,
+            endLineNumber: position.lineNumber, endColumn: position.column
+          };
+
+          // カーソル直後のテキストを見て、既に閉じ "}}" があるか判定する。
+          // ある場合は挿入側の "}}" を付けない（"}}}}" の二重化を防ぐ）。
+          // 例: {{dm|}}  ← | がカーソル。ここで dmsf を選ぶと {{dmsf}} に
+          //     したいが、素朴に "}}" を足すと {{dmsf}}}} になってしまう。
+          var lineMax = model.getLineMaxColumn(position.lineNumber);
+          var after = model.getValueInRange({
+            startLineNumber: position.lineNumber, startColumn: position.column,
+            endLineNumber: position.lineNumber, endColumn: lineMax
+          });
+          // 直後が "}}"（前後の空白は許容しない・厳密に直後）で始まるか
+          var hasClosing = /^\}\}/.test(after);
+
+          var suggestions = macroListCache.map(function (macro) {
+            // 引数を取りそうなマクロは ( ) を補い、カーソルを括弧内へ。
+            // 取らなそうなマクロ（toc等）はそのまま閉じる。
+            // documentation 内に "(" を含むかどうかで簡易判定する。
+            var hasArgs = /\(/.test(macro.documentation || '');
+            // 閉じ "}}" は、直後に既に "}}" がある場合は付けない。
+            var closing = hasClosing ? '' : '}}';
+            var insert = hasArgs
+              ? macro.name + '(${1})' + closing
+              : macro.name + closing;
+
+            return {
+              label: '{{' + macro.name + '}}',
+              kind: monacoInstance.languages.CompletionItemKind.Function,
+              // 候補リスト右の短い説明（descの1行目）
+              detail: macro.detail || '',
+              // 候補を選ぶと右に展開される詳細（descの全文）。
+              // IMarkdownString は { value } 形式。isTrusted は付けない
+              // （一部バージョンで false 指定がレンダリングを抑制するため）。
+              documentation: { value: buildMacroDoc(macro) },
+              // {{ は既に入力済みなので、マクロ名以降だけ挿入する
+              insertText: insert,
+              insertTextRules:
+                monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+              // typed が空でも全候補を出しつつ、入力に応じて絞り込む
+              filterText: macro.name,
+              range: range
+            };
+          });
+
+          return { suggestions: suggestions };
+        }
+      });
+    });
+  }
+
+  // マクロの documentation 文字列を Markdown として組み立てる。
+  // 1行目を見出し的に、残りをコードブロックで囲んで使用例を読みやすくする。
+  function buildMacroDoc(macro) {
+    var name = macro.name || '';
+    var full = (macro.documentation || '').trim();
+
+    // 全文が1行だけ（短い説明のみ）ならそのまま返す。
+    var lines = full.split('\n');
+    if (lines.length <= 1) {
+      return '**{{' + name + '}}**\n\n' + full;
+    }
+
+    // 1行目を説明、2行目以降を本文として扱う。
+    var firstLine = lines[0].trim();
+    var rest = lines.slice(1).join('\n').trim();
+
+    var doc = '**{{' + name + '}}**';
+    if (firstLine) { doc += '\n\n' + firstLine; }
+    if (rest) {
+      // 残りはそのまま（使用例の {{...}} 等を等幅で見せるためコードブロック化）
+      doc += '\n\n```\n' + rest + '\n```';
+    }
+    return doc;
+  }
+
+  // ============================================================
+  // 補完候補の詳細パネル（documentation）を自動展開させる
+  // ============================================================
+  // Monacoの補完ウィジェットは詳細パネル（候補右の説明）を既定で畳む。
+  // このバージョンには 'toggleSuggestionDetails' アクションが無いため、
+  // suggest widget の toggleDetails() を直接呼ぶ。
+  // むやみに呼ぶと開いているものを閉じてしまうので、ウィジェットの
+  // ルートDOMに 'shows-details' クラスが無い（=畳まれている）ときだけ
+  // 呼んで開く。
+  function setupSuggestDetailsExpand(editor) {
+    var suggestController =
+      editor.getContribution('editor.contrib.suggestController');
+    if (!suggestController) { return; }
+
+    var widgetRef = suggestController.widget;
+    var w = (widgetRef && widgetRef.value) ? widgetRef.value : widgetRef;
+    if (!w || typeof w.onDidShow !== 'function') { return; }
+
+    function widgetDom() {
+      return (w.element && w.element.domNode) ||
+             w.domNode ||
+             document.querySelector('.suggest-widget');
+    }
+
+    function ensureDetailsVisible() {
+      var dom = widgetDom();
+      if (!dom || !dom.classList) { return; }
+      // 既に展開済み（shows-details あり）なら何もしない
+      if (dom.classList.contains('shows-details')) { return; }
+
+      // 詳細を開く。実装差異に備え toggleDetails / showDetails を順に試す。
+      try {
+        if (typeof w.toggleDetails === 'function') {
+          w.toggleDetails();
+        } else if (typeof w.showDetails === 'function') {
+          w.showDetails(true);
+        }
+      } catch (e) { /* no-op */ }
+    }
+
+    w.onDidShow(function () {
+      // 描画とクラス付与の完了を待ってから判定する
+      setTimeout(ensureDetailsVisible, 0);
+    });
+  }
+
+
   function registerMarkdownOutline(monacoInstance) {
     if (symbolProviderRegistered) { return; }
     symbolProviderRegistered = true;
@@ -806,6 +1072,35 @@
   // 全エディタで共有する単一のツールチップ要素
   var caretTooltipEl = null;
 
+  // ============================================================
+  // ツールチップの配置先をフルスクリーン状態に追従させる
+  // ============================================================
+  // ツールチップは通常 body 直下に置くが、ネイティブFullscreen API は
+  // 全画面化した要素（このプラグインでは .monaco-editor-wrapper）の
+  // 子孫しか描画しない。そのため body 直下のままだとフルスクリーン中に
+  // ツールチップが見えない（#チケットや@メンションのツールチップが
+  // 出ない原因）。
+  //
+  // 表示直前にこの関数を呼び、フルスクリーン中なら全画面要素の中へ、
+  // そうでなければ body 直下へツールチップを移し替える。
+  // 戻り値: フルスクリーン中ならその要素、そうでなければ null。
+  //   呼び出し側はこれを見て座標計算を切り替える
+  //   （body基準=ページ座標 / 全画面要素基準=ビューポート座標）。
+  function ensureTooltipParent(el) {
+    if (!el) { return null; }
+    var fsEl = document.fullscreenElement ||
+               document.webkitFullscreenElement ||
+               document.mozFullScreenElement ||
+               document.msFullscreenElement ||
+               // 擬似全画面（API非対応時のフォールバック）にも対応
+               document.querySelector('.monaco-editor-wrapper.monaco-fullscreen');
+    var desiredParent = fsEl || document.body;
+    if (el.parentNode !== desiredParent) {
+      desiredParent.appendChild(el);
+    }
+    return fsEl || null;
+  }
+
   function getCaretTooltipEl() {
     if (caretTooltipEl) { return caretTooltipEl; }
     caretTooltipEl = document.createElement('div');
@@ -885,10 +1180,20 @@
           el.innerHTML = html;
         }
 
-        // 位置決め: #数字 の少し上に出す（page座標 = viewport + scroll）
+        // 位置決め: #数字 の少し上に出す。
+        // 配置先をフルスクリーン状態に追従させ、座標系を合わせる。
+        //   - 通常(body直下/absolute): ページ座標 = viewport + scroll
+        //   - 全画面要素内: 全画面要素はビューポート固定なので scroll は足さない
+        var fsEl = ensureTooltipParent(el);
         el.style.display = 'block';
-        var top = rect.top + coord.top + window.scrollY;
-        var left = rect.left + coord.left + window.scrollX;
+        var top, left;
+        if (fsEl) {
+          top = rect.top + coord.top;
+          left = rect.left + coord.left;
+        } else {
+          top = rect.top + coord.top + window.scrollY;
+          left = rect.left + coord.left + window.scrollX;
+        }
 
         // まず表示してサイズを測り、上に出す（行の上に被せない）
         var th = el.offsetHeight;
@@ -1336,10 +1641,17 @@
       folding: true,
       foldingStrategy: 'auto',
       showFoldingControls: 'mouseover',
-      // ホバー等のオーバーレイをbody直下に固定配置する。
-      // エディタコンテナの幅・スクロール位置に起因する
-      // ツールチップの配置ズレ（左に余白が空く現象）を回避する。
+      // ホバー・補完・詳細パネルなどのオーバーレイの配置先を明示する。
+      // 【重要】配置先を「このエディタの wrapper の中」に作る点がミソ。
+      //   - body直下に置くと、ブラウザのネイティブFullscreen API は
+      //     全画面化した wrapper の子孫しか描画しないため、フルスクリーン中に
+      //     補完(@/#含む)やツールチップが一切出なくなる（既存の不具合の原因）。
+      //   - wrapper 内に置けば、フルスクリーンでもエディタと一緒に表示される。
+      // ノードは position:fixed + inset:0 でビューポートに重ね、Monacoが
+      // 書き込む top/left がビューポート座標と一致するようにする
+      //（詳細パネルが画面外に飛ぶ問題も同時に解消）。
       fixedOverflowWidgets: true,
+      overflowWidgetsDomNode: createOverflowWidgetsNode(wrapper, resolveThemeName(PREFS.theme)),
       // ---- 補完の方針 ----
       // 既存単語の補完(abc候補)は出さないが、@メンションの補完は出したい。
       // suggestOnTriggerCharacters を true にすると @ などのトリガー文字で
@@ -1352,7 +1664,12 @@
       tabCompletion: 'off',
       parameterHints: { enabled: false },
       suggest: {
-        showWords: false
+        showWords: false,
+        // 補完候補の右側に説明（documentation / detail）パネルを表示する。
+        // 既定ではユーザー操作で畳まれていることがあるため明示的に開く。
+        showStatusBar: true,
+        // 各種マクロのアイコン横に出す説明（detail）を有効化
+        showInlineDetails: true
       }
     });
 
@@ -1372,6 +1689,12 @@
       });
       ro.observe(editorContainer);
     }
+
+    // 補完候補の説明パネル（documentation）を最初から展開させる。
+    // Monacoは詳細パネルの開閉状態を内部に保持しており、初期状態だと
+    // 畳まれていて documentation が見えないことがある。補完ウィジェットが
+    // 開いた直後に「詳細を展開」コマンドを1回だけ実行して開いた状態にする。
+    setupSuggestDetailsExpand(editor);
 
     // Monaco の変更をtextareaに反映（フォーム送信時に値が送られるよう）
     // syncingフラグで逆方向同期との相互ループを防ぐ。
@@ -1485,6 +1808,14 @@
       clearTimeout(previewTimer);
       previewTimer = setTimeout(updatePreview, 600);
     });
+
+    // ---- プレビュー内サムネイルのライトボックス表示 ----
+    // {{thumbnail}} で生成されるサムネイルは <a href="...元画像"> でラップ
+    // されており、素のままクリックすると元画像URLへページ遷移してしまう
+    // （Monacoで編集中だと「変更が保存されない可能性…」の離脱警告が出る）。
+    // プレビューペインにイベント委譲を1回だけ張り、サムネイルのクリックを
+    // 横取りして画面内モーダルで拡大表示する（遷移しない）。
+    setupThumbnailLightbox(previewPane);
 
     // ---- スクロール同期（エディタ → プレビュー、一方向）----
     setupScrollSync(editor, previewPane, body, textFormat);
@@ -1718,8 +2049,16 @@
     var left = rect.left + coord.left;
     // 上に出す余白が無ければ下に出す
     if (top < 0) { top = rect.top + coord.top + 20; }
-    mentionTooltipEl.style.top = (top + window.scrollY) + 'px';
-    mentionTooltipEl.style.left = (left + window.scrollX) + 'px';
+    // 配置先をフルスクリーン状態に追従させ、座標系を合わせる
+    // （全画面要素内ではビューポート基準のため scroll を足さない）。
+    var fsEl = ensureTooltipParent(mentionTooltipEl);
+    if (fsEl) {
+      mentionTooltipEl.style.top = top + 'px';
+      mentionTooltipEl.style.left = left + 'px';
+    } else {
+      mentionTooltipEl.style.top = (top + window.scrollY) + 'px';
+      mentionTooltipEl.style.left = (left + window.scrollX) + 'px';
+    }
   }
 
 
@@ -1813,6 +2152,114 @@
       if (!visible) { return; }
       clearTimeout(rebuildTimer);
       rebuildTimer = setTimeout(render, 400);
+    });
+  }
+
+  // ============================================================
+  // プレビュー内サムネイルのライトボックス（拡大表示）
+  // ============================================================
+  // {{thumbnail(image.png)}} はプレビューHTML上では概ね
+  //   <a href="/attachments/123/image.png" ...>
+  //     <img src="/attachments/thumbnail/123/..." class="thumbnail" ...>
+  //   </a>
+  // のような構造になる。このリンクを素でクリックすると元画像URLへ
+  // 遷移してしまい、編集中だと離脱警告ダイアログが出る。
+  //
+  // そこでプレビューペインにクリックを委譲で受け、サムネイル相当の
+  // クリックなら preventDefault してページ内モーダルで拡大表示する。
+  // 委譲なので再描画でDOMが入れ替わっても張り直し不要（ペイン自体に1回だけ）。
+
+  // 全エディタで共有する単一のライトボックス要素
+  var lightboxEl = null;
+  var lightboxImg = null;
+
+  function getLightbox() {
+    if (lightboxEl) { return lightboxEl; }
+
+    lightboxEl = document.createElement('div');
+    lightboxEl.className = 'monaco-lightbox';
+    lightboxEl.style.display = 'none';
+
+    lightboxImg = document.createElement('img');
+    lightboxImg.className = 'monaco-lightbox-img';
+    lightboxImg.alt = '';
+
+    var closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'monaco-lightbox-close';
+    closeBtn.setAttribute('aria-label', 'close');
+    closeBtn.innerHTML = '×';
+
+    lightboxEl.appendChild(lightboxImg);
+    lightboxEl.appendChild(closeBtn);
+    document.body.appendChild(lightboxEl);
+
+    // 背景クリック・×ボタンで閉じる（画像本体クリックでは閉じない）
+    lightboxEl.addEventListener('click', function (e) {
+      if (e.target === lightboxImg) { return; }
+      hideLightbox();
+    });
+
+    // ESCで閉じる
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && lightboxEl && lightboxEl.style.display !== 'none') {
+        hideLightbox();
+      }
+    });
+
+    return lightboxEl;
+  }
+
+  function showLightbox(src, alt) {
+    var box = getLightbox();
+    // フルスクリーン中は全画面要素の中へ移す（body直下だと隠れるため）。
+    // ライトボックスは fixed/inset:0 で全面を覆うので座標調整は不要。
+    ensureTooltipParent(box);
+    lightboxImg.src = src;
+    lightboxImg.alt = alt || '';
+    box.style.display = 'flex';
+  }
+
+  function hideLightbox() {
+    if (lightboxEl) {
+      lightboxEl.style.display = 'none';
+      // メモリ解放と次回チラつき防止のため src を空にする
+      if (lightboxImg) { lightboxImg.src = ''; }
+    }
+  }
+
+  // プレビューペインにサムネイルクリックの委譲を1回だけ張る。
+  function setupThumbnailLightbox(previewPane) {
+    if (!previewPane || previewPane._monacoLightboxBound) { return; }
+    previewPane._monacoLightboxBound = true;
+
+    previewPane.addEventListener('click', function (e) {
+      // クリック地点から最も近い <a> を辿る
+      var link = e.target.closest ? e.target.closest('a') : null;
+      if (!link) { return; }
+
+      // サムネイル判定:
+      //   (1) リンク内に img.thumbnail がある（{{thumbnail}}の典型）
+      //   (2) もしくはリンク直下が画像で、hrefが画像系拡張子
+      var img = link.querySelector('img');
+      var href = link.getAttribute('href') || '';
+      var looksImage = /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(href);
+      var isThumb = img && (
+        img.classList.contains('thumbnail') ||
+        looksImage ||
+        /\/attachments\//.test(href)
+      );
+
+      if (!isThumb) { return; }
+
+      // ページ遷移（＝離脱警告）を止めて、画面内で拡大表示する
+      e.preventDefault();
+      e.stopPropagation();
+
+      // 拡大に使うURLは「元画像（リンク先）」を優先。
+      // href が画像でなければサムネイル画像のsrcで代替する。
+      var fullSrc = looksImage ? href : (img ? img.src : href);
+      showLightbox(fullSrc, img ? img.alt : '');
     });
   }
 

@@ -11,7 +11,11 @@
   background: #fff;
   margin-bottom: 4px;
   position: relative;
-  overflow: hidden;      /* 内部要素が下のフォームに被らないよう保険 */
+  /* overflow:hidden だと、wrapper内に配置した overflowWidgets(補完の
+     詳細パネル等)が wrapper の表示領域(高さ)でクリップされて見えなく
+     なる。クリップは内側の .monaco-editor-body（overflow:hidden 済み）に
+     任せ、wrapper 自体は visible にしてウィジェットを突き抜けさせる。 */
+  overflow: visible;
   min-height: 150px;
   box-sizing: border-box;
 }
@@ -454,7 +458,7 @@ textarea.wiki-edit.monaco-replaced {
    詳細度で指定しないと上書きできない。DOM構造に沿って深く書く。
    背景: 非選択行=明るいグレー / 選択行(focused)=濃い青 */
 
-/* 非選択行（明るい背景）→ 濃い文字 */
+/* 非選択行（明るいテーマ時）→ 濃い文字 */
 .monaco-editor .suggest-widget .monaco-list .monaco-list-row:not(.focused) > .contents > .main .monaco-icon-label,
 .monaco-editor .suggest-widget .monaco-list .monaco-list-row:not(.focused) > .contents > .main .monaco-icon-label .label-name,
 .monaco-editor .suggest-widget .monaco-list .monaco-list-row:not(.focused) > .contents > .main .monaco-highlighted-label {
@@ -815,4 +819,111 @@ textarea.wiki-edit.monaco-replaced {
 /* 全画面中は背面（body）のスクロールを抑止 */
 body.monaco-fullscreen-active {
   overflow: hidden;
+}
+
+/* ============================================================
+   サムネイル ライトボックス（プレビュー内 {{thumbnail}} 拡大表示）
+   ============================================================
+   プレビュー内のサムネイルクリックで、ページ遷移せず画面内に
+   原寸（ビューポート内に収まる範囲）で拡大表示するためのオーバーレイ。 */
+.monaco-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.75);
+  /* クリックで閉じられることを示すカーソル */
+  cursor: zoom-out;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.monaco-lightbox-img {
+  max-width: 95vw;
+  max-height: 95vh;
+  object-fit: contain;
+  /* 画像本体はクリックしても閉じない（既定カーソルに戻す） */
+  cursor: default;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+  background: #fff;
+  border-radius: 2px;
+}
+
+.monaco-lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  width: 36px;
+  height: 36px;
+  line-height: 34px;
+  text-align: center;
+  font-size: 24px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.4);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  padding: 0;
+}
+
+.monaco-lightbox-close:hover {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+/* プレビュー内サムネイルにズームカーソルを出して、拡大できることを示す */
+.monaco-preview-pane img.thumbnail,
+.monaco-preview-pane a img.thumbnail {
+  cursor: zoom-in;
+}
+
+/* ============================================================
+   補完候補リスト（suggest-widget）の文字色 — テーマ別
+   ============================================================
+   背景はテーマ（vs / vs-dark）で変わるため、文字色もテーマで切り替える。
+   ライトテーマ(vs)の濃い文字は上の既定ルールが担当し、ここでは
+   ダークテーマ(vs-dark)のときだけ明るい文字に上書きする。
+   実テキストは .monaco-highlighted-label に入る（.label-name は親）。 */
+
+/* ダークテーマ: 非選択行 → 明るい文字 #E1E4E8 */
+.monaco-editor.vs-dark .suggest-widget .monaco-list .monaco-list-row:not(.focused) > .contents > .main .monaco-icon-label,
+.monaco-editor.vs-dark .suggest-widget .monaco-list .monaco-list-row:not(.focused) > .contents > .main .monaco-icon-label .label-name,
+.monaco-editor.vs-dark .suggest-widget .monaco-list .monaco-list-row:not(.focused) > .contents > .main .monaco-highlighted-label {
+  color: #E1E4E8 !important;
+}
+
+/* ダークテーマ: 非選択行のあいまい一致ハイライト → 青系のまま強調
+   （明るい文字の上で映えるよう、やや明るめの青にする） */
+.monaco-editor.vs-dark .suggest-widget .monaco-list .monaco-list-row:not(.focused) > .contents > .main .monaco-highlighted-label .highlight {
+  color: #6cb6ff !important;
+  font-weight: bold !important;
+}
+
+/* ダークテーマ: 説明(detail) → やや明るいグレー */
+.monaco-editor.vs-dark .suggest-widget .monaco-list .monaco-list-row:not(.focused) > .contents > .main > .right > .details-label {
+  color: #9DA5B4 !important;
+}
+
+/* ============================================================
+   オーバーフローウィジェットの配置先ルート
+   ============================================================
+   overflowWidgetsDomNode に指定した固定コンテナ。
+   コンテナ自体は pointer-events:none で背面操作を妨げないが、
+   中に入る実際のウィジェット（補完・ホバー・詳細パネル）は
+   操作できる必要があるので pointer-events を復活させる。 */
+.monaco-overflow-widgets-root {
+  /* コンテナは入力を透過（下のUIを触れるように） */
+  pointer-events: none;
+  /* monaco-editor クラス由来の背景・枠・サイズの影響を打ち消す。
+     このノードは「座標系の基準点」だけを提供し、見た目は持たない。 */
+  background: transparent !important;
+  border: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: visible !important;
+}
+.monaco-overflow-widgets-root > * {
+  /* 実際のウィジェットはクリック/ホバー可能に戻す */
+  pointer-events: auto;
 }
