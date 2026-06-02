@@ -48,6 +48,9 @@ Insert a link to an attachment (`attachment:filename`) by picking it from a list
 **Markdown and Textile support**
 Works whether Redmine is set to Markdown or Textile. The toolbar buttons automatically emit the correct markup for the active format, so you get the same operation feel in either environment.
 
+**Per-user on/off**
+For people who prefer the familiar standard editor, each user can choose whether to use Monaco Editor from their own "My account" preferences page. When turned off, Monaco is not loaded for that user and Redmine's standard editor is shown as usual.
+
 ## Tested environment
 
 - Redmine 6.1 (Propshaft environment)

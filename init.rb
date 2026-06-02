@@ -1,3 +1,6 @@
+require_relative 'lib/redmine_monaco_editor/settings'
+require_relative 'lib/redmine_monaco_editor/my_controller_patch'
+
 Redmine::Plugin.register :redmine_monaco_editor do
   name        'Redmine Monaco Editor'
   author      'Suguru Ochiai'
@@ -6,13 +9,52 @@ Redmine::Plugin.register :redmine_monaco_editor do
   requires_redmine version_or_higher: '6.0.0'
 end
 
+# MyController へパッチを適用（個人設定保存時に monaco_settings を反映）。
+# prepend で account メソッドをラップする。
+#
+# 適用タイミングの注意:
+#   プラグインの init.rb はRails初期化のかなり後で評価されるため、
+#   Rails.application.config.to_prepare にブロックを登録しても初回の
+#   to_prepare フックを取りこぼし、本番(eager_load)環境では一度も
+#   実行されないことがある。そこで以下の二段構えにする:
+#     (1) init.rb 評価時点で MyController をロードして即 prepend
+#     (2) 念のため to_prepare にも登録（開発環境の再読み込み追従用）
+#
+# トップレベルに def を置くと Object にメソッドが生えてしまうため、
+# ラムダに包んで名前空間を汚さないようにする。
+redmine_monaco_editor_apply_patch = lambda do
+  begin
+    require_dependency 'my_controller'
+    unless MyController.ancestors.include?(RedmineMonacoEditor::MyControllerPatch)
+      MyController.send(:prepend, RedmineMonacoEditor::MyControllerPatch)
+      Rails.logger.info '[redmine_monaco_editor] MyControllerPatch prepended'
+    end
+  rescue => e
+    Rails.logger.error "[redmine_monaco_editor] failed to apply MyControllerPatch: #{e.class}: #{e.message}"
+  end
+end
+
+# (1) その場で適用（本番eager_load環境で確実に効かせる）
+redmine_monaco_editor_apply_patch.call
+
+# (2) 開発環境のクラス再読み込みにも追従させる
+Rails.application.config.to_prepare do
+  redmine_monaco_editor_apply_patch.call
+end
+
 # ViewHook は init.rb 内に直接定義する
 # （require_dependency で別ファイルを読む方式だと環境によって効かないため）
 module RedmineMonacoEditor
   class ViewHook < Redmine::Hook::ViewListener
-    # monaco_editor 名前空間配下の翻訳キー一覧。
-    # ここに挙げたキーを現在のロケールで解決し、JS に window.MONACO_EDITOR_I18N
-    # として渡す。新しいUI文字列を足すときは locales の yml とこの配列に追記する。
+    # monaco_editor 名前空間配下の翻訳キーのうち、
+    # 「フロントエンド(JS)に渡すもの」だけをここに列挙する。
+    # ここに挙げたキーは現在のロケールで解決し、JSへ
+    # window.MONACO_EDITOR_I18N として渡される。
+    #
+    # 注意: サーバ側(ViewHook)でしか使わない文言（個人設定画面の
+    # ラベル等）はここに入れない。それらは yml に置いて l() で直接
+    # 引けば済むため、JSへ渡すと無駄になる。新しい言語を足すときは
+    # yml を1枚増やすだけでよく、この配列は触らない。
     I18N_KEYS = %w[
       mode_edit mode_edit_tip mode_split mode_split_tip mode_split_v_tip
       mode_preview_tip outline_tip
@@ -31,20 +73,60 @@ module RedmineMonacoEditor
     ].freeze
 
     def view_layouts_base_html_head(context = {})
+      user = User.current
+
+      # この機能を無効にしているユーザーには、JS/CSS自体を差し込まない。
+      # → textareaは素のまま（純正エディタ）になる。
+      return ''.html_safe unless RedmineMonacoEditor::Settings.enabled_for?(user)
+
       # 現在のユーザー言語で各キーを解決して辞書を作る。
       # l() は Redmine のヘルパー。キーは "monaco_editor.<key>" 形式。
       dict = I18N_KEYS.each_with_object({}) do |key, h|
         h[key] = l("monaco_editor.#{key}")
       end
 
-      # JSへ辞書を渡す（XSS対策として JSON を escape_javascript せず、
-      # to_json で安全にシリアライズしたうえで <script> に埋め込む）。
-      i18n_script =
-        "<script>window.MONACO_EDITOR_I18N = #{dict.to_json};</script>".html_safe
+      # ユーザーのMonaco設定（将来のtheme/font_size含む）をJSへ渡す。
+      prefs = RedmineMonacoEditor::Settings.for_user(user)
+
+      # JSへ辞書/設定を渡す（to_json で安全にシリアライズして埋め込む）。
+      data_script =
+        ("<script>" \
+         "window.MONACO_EDITOR_I18N = #{dict.to_json};" \
+         "window.MONACO_EDITOR_PREFS = #{prefs.to_json};" \
+         "</script>").html_safe
 
       stylesheet_link_tag('monaco_editor', plugin: 'redmine_monaco_editor') +
-      i18n_script +
+      data_script +
       javascript_include_tag('monaco_editor', plugin: 'redmine_monaco_editor')
+    end
+
+    # ============================================================
+    # 個人設定（My account）画面に「Monaco Editorを使う」チェックボックスを追加
+    # ============================================================
+    # view_my_account_preferences フックは、個人設定ページの
+    # 「設定」セクション内にHTMLを差し込める。
+    # チェックボックスは hidden(=0) と組にして、OFF時も必ず値が
+    # 送信されるようにする（未チェックだと送られないHTML仕様の回避）。
+    def view_my_account_preferences(context = {})
+      user = context[:user] || User.current
+      checked = RedmineMonacoEditor::Settings.enabled_for?(user)
+
+      section_label = l('monaco_editor.pref_section')
+      enabled_label = l('monaco_editor.pref_enabled')
+
+      checkbox = checked ? 'checked="checked"' : ''
+
+      # Redmineの個人設定フォーム内に差し込まれる前提のHTML。
+      # name を monaco_settings[...] にすることで params[:monaco_settings] に入る。
+      # hidden(=0) と checkbox(=1) を組にし、OFF時も値が必ず送信されるようにする。
+      "<fieldset class=\"box tabular\">" \
+      "<legend>#{ERB::Util.html_escape(section_label)}</legend>" \
+      "<p>" \
+      "<label>#{ERB::Util.html_escape(enabled_label)}</label>" \
+      "<input type=\"hidden\" name=\"monaco_settings[enabled]\" value=\"0\" />" \
+      "<input type=\"checkbox\" name=\"monaco_settings[enabled]\" value=\"1\" #{checkbox} />" \
+      "</p>" \
+      "</fieldset>".html_safe
     end
   end
 end

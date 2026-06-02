@@ -69,3 +69,7 @@ en:
     # Ticket tooltip
     ticket_not_found: "ticket not found"
     note_prefix: "Note #"
+
+    # My account page
+    pref_section: "Monaco Editor"
+    pref_enabled: "Use Monaco Editor"

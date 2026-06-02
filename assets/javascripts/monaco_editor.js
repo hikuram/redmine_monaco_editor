@@ -45,6 +45,18 @@
     return (fallback !== undefined) ? fallback : key;
   }
 
+  // ユーザー個人設定（init.rb が window.MONACO_EDITOR_PREFS に埋め込む）。
+  //   { enabled: bool, theme: string, font_size: number, ... }
+  // サーバ側で無効ユーザーにはそもそもこのJSを読み込ませないが、
+  // キャッシュ等でJSだけ読まれた場合の保険として、ここでも参照する。
+  // 将来 theme / font_size をMonacoのoptionへ反映する際もここを使う。
+  var PREFS = (typeof window !== 'undefined' && window.MONACO_EDITOR_PREFS) || {};
+  function prefEnabled() {
+    // 設定が無い（旧来どおり）場合は true（後方互換：従来は常に有効だった）
+    if (!Object.prototype.hasOwnProperty.call(PREFS, 'enabled')) { return true; }
+    return [true, 'true', '1', 1].indexOf(PREFS.enabled) !== -1 || PREFS.enabled === true;
+  }
+
   // ============================================================
   // Monaco ローダー（public直下に配置したvsを参照）
   // ============================================================
@@ -2718,6 +2730,9 @@
   }
 
   function initEditors() {
+    // 個人設定で無効化されている場合は何もしない（純正エディタのまま）。
+    if (!prefEnabled()) { return; }
+
     loadMonaco(function () {
       // Redmineのwikiエディタtextarea
       // issue description, wiki pages, notes など

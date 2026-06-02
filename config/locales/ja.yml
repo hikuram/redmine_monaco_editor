@@ -69,3 +69,7 @@ ja:
     # チケットツールチップ
     ticket_not_found: "チケットが見つかりません"
     note_prefix: "注記#"
+
+    # 個人設定画面（My account）
+    pref_section: "Monaco Editor"
+    pref_enabled: "Monaco Editor を使用する"
