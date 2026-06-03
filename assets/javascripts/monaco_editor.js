@@ -578,6 +578,9 @@
     if (mentionProviderRegistered) { return; }
     mentionProviderRegistered = true;
 
+    // ユーザー一覧をエンドポイントから先読み（id/login/name）
+    prefetchUsers();
+
     monacoInstance.languages.registerCompletionItemProvider('markdown', {
       triggerCharacters: ['@'],
       provideCompletionItems: function (model, position) {
@@ -592,31 +595,35 @@
 
         var typed = m[1];                          // @の後ろに打った文字
         var startCol = position.column - typed.length - 1; // @ の位置
-        var users = collectProjectUsers();
-        var modelUri = model.uri ? model.uri.toString() : '';
 
         var range = {
           startLineNumber: position.lineNumber, startColumn: startCol,
           endLineNumber: position.lineNumber, endColumn: position.column
         };
 
-        var suggestions = users.map(function (u) {
+        // 候補母集団はエンドポイント（プロジェクトメンバー）。
+        // 取得前なら、フォールバックで担当者セレクトの表示名を出す
+        //（この場合 login が不明なので表示名のみ。通常はプリフェッチで間に合う）。
+        var source = (userListCache && userListCache.length)
+          ? userListCache
+          : collectProjectUsers().map(function (u) {
+              return { id: u.id, login: '', name: u.name };
+            });
+
+        var suggestions = source.map(function (u) {
+          // 挿入は @ログインID を直接入れる（Redmineはlogin基準で解決）。
+          // login が不明なフォールバック時のみ表示名を入れる。
+          var insertCore = u.login ? ('@' + u.login) : ('@' + u.name);
           return {
             label: '@' + u.name,                   // 候補表示は @表示名
             kind: monacoInstance.languages.CompletionItemKind.User,
-            detail: 'メンション',
-            // filterText を "@表示名" にする。ユーザーが @Ochi と打つと
-            // Monacoのあいまい一致で "@Suguru Ochiai" にマッチする
-            // （@,O,c,h,i が順に含まれる）。
+            detail: u.login ? ('@' + u.login) : 'メンション',
+            // ユーザーが @Ochi と打つと "@Suguru Ochiai" にあいまい一致する
             filterText: '@' + u.name,
-            insertText: '@' + u.name,              // 一旦表示名を入れる（後でログインIDに置換）
-            range: range,
-            // 確定後にログインIDへ置換するためのコマンドを呼ぶ
-            command: {
-              id: MENTION_RESOLVE_CMD,
-              title: 'resolve mention',
-              arguments: [modelUri, u.id, position.lineNumber, startCol]
-            }
+            // 確定で @ログインID を直接挿入。末尾にスペースを足す。
+            // スクレイプも後追い置換コマンドも不要（別行の複数メンションでも安全）。
+            insertText: insertCore + ' ',
+            range: range
           };
         });
 
@@ -828,11 +835,38 @@
   // 現在のプロジェクト識別子（挿入形を project:title にするか title のみかの判定用）
   var currentProjectIdentifier = null;
 
-  // 現在のプロジェクト識別子を URL から推定する（/projects/<id>/...）。
+  // 現在のプロジェクト識別子を推定する。
+  // チケット編集画面は /issues/123/edit のように URL に /projects/<id> を
+  // 含まないことがあるため、複数の手段で順に試す:
+  //   1) URL の /projects/<id>
+  //   2) パンくず等の /projects/<id> へのリンク href（識別子を正確に含む）
+  //   3) body の "project-<id>" クラス（Redmine標準。最後の保険）
   function detectCurrentProject() {
     if (currentProjectIdentifier !== null) { return currentProjectIdentifier; }
-    var m = /\/projects\/([^\/]+)/.exec(window.location.pathname || '');
-    currentProjectIdentifier = m ? decodeURIComponent(m[1]) : '';
+
+    var id = '';
+
+    // 1) URL から
+    var m = /\/projects\/([^\/?#]+)/.exec(window.location.pathname || '');
+    if (m) { id = decodeURIComponent(m[1]); }
+
+    // 2) ページ内の /projects/<id> リンクから（パンくず・ヘッダ等）
+    if (!id) {
+      var link = document.querySelector('a[href*="/projects/"]');
+      if (link) {
+        var lm = /\/projects\/([^\/?#]+)/.exec(link.getAttribute('href') || '');
+        if (lm) { id = decodeURIComponent(lm[1]); }
+      }
+    }
+
+    // 3) body の project-<id> クラス（保険）。
+    //    識別子はハイフンを含み得るので、project- 以降を末尾まで取る。
+    if (!id) {
+      var bm = /(?:^|\s)project-([a-z0-9_-]+)/i.exec(document.body.className || '');
+      if (bm) { id = bm[1]; }
+    }
+
+    currentProjectIdentifier = id || '';
     return currentProjectIdentifier;
   }
 
@@ -1135,6 +1169,54 @@
     return users;
   }
 
+  // ============================================================
+  // メンション候補ユーザー（プラグイン独自エンドポイントから取得）
+  // ============================================================
+  // /monaco_editor/users が、プロジェクトメンバーを id/login/name で返す。
+  // これを起動時に1回取得してキャッシュし、@補完の候補・ログインID解決・
+  // ツールチップの全てに使う。
+  //
+  // 以前は /users/<id> ページをスクレイプして login を得ていたが、
+  // ヘッダーの .user が「ログイン中の自分」を指すため誤った login（自分）に
+  // 解決される不具合があった。サーバが User.login を直接返すことで解消。
+  //
+  // userListCache: [{id, login, name}, ...]
+  // userByIdMap  : { id(String) -> {id, login, name} }
+  // userByLoginMap: { login -> {id, login, name} }
+  var userListCache = null;
+  var userByIdMap = {};
+  var userByLoginMap = {};
+  var usersFetchStarted = false;
+
+  function prefetchUsers() {
+    if (usersFetchStarted) { return; }
+    usersFetchStarted = true;
+
+    var proj = detectCurrentProject();
+    var url = '/monaco_editor/users' +
+      (proj ? ('?project_id=' + encodeURIComponent(proj)) : '');
+
+    fetch(url, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      credentials: 'same-origin'
+    })
+      .then(function (res) {
+        if (!res.ok) { throw new Error('HTTP ' + res.status); }
+        return res.json();
+      })
+      .then(function (list) {
+        userListCache = Array.isArray(list) ? list : [];
+        userListCache.forEach(function (u) {
+          userByIdMap[String(u.id)] = u;
+          if (u.login) { userByLoginMap[u.login] = u; }
+        });
+      })
+      .catch(function () {
+        userListCache = [];
+      });
+  }
+
   // 数値ID → { login, name } を取得（キャッシュ付き）
   var userByIdCache = {};
   function fetchUserById(numericId) {
@@ -1148,12 +1230,41 @@
       })
       .then(function (html) {
         var doc = new DOMParser().parseFromString(html, 'text/html');
-        var loginEl = doc.querySelector('.user');
-        var nameEl = doc.querySelector('h2');
-        var info = {
-          login: loginEl ? loginEl.textContent.trim() : '',
-          name: nameEl ? nameEl.textContent.trim() : ''
-        };
+
+        // ログインIDの取得:
+        // ヘッダー/サイドバーにある .user は「ログイン中の自分」を指すため、
+        // そこを拾うと常に自分のログインIDになってしまう（別ユーザーを
+        // 引いても自分が返る不具合の原因）。
+        // ユーザー詳細の本文には「ログインID: xxx」(英語UIは "Login: xxx")
+        // というラベルがあるので、本文(#content)からそれを抽出する。
+        var login = '';
+        var content = doc.querySelector('#content') || doc.body;
+        if (content) {
+          var bodyText = content.textContent || '';
+          // 「ログインID: xxx」「Login: xxx」「Username: xxx」等に対応。
+          // 値は空白・改行までを1トークンとして取る。
+          var lm = /(?:ログインID|ログイン名|Login|Username)\s*[:：]\s*([^\s\n\r]+)/.exec(bodyText);
+          if (lm) { login = lm[1].trim(); }
+        }
+        // フォールバック: 本文から取れない場合のみ、従来の .user を使う。
+        if (!login) {
+          var loginEl = (content && content.querySelector('.user')) ||
+                        doc.querySelector('.user');
+          if (loginEl) { login = loginEl.textContent.trim(); }
+        }
+
+        // 表示名: 本文の h2 を優先。先頭にアバター文字（spanのテキスト）が
+        // 混ざることがあるので、avatar要素を除いたテキストを使う。
+        var name = '';
+        var h2 = (content && content.querySelector('h2')) || doc.querySelector('h2');
+        if (h2) {
+          var clone = h2.cloneNode(true);
+          // アバター（.avatar）を取り除いてから本文テキストを得る
+          clone.querySelectorAll('.avatar, .gravatar, img').forEach(function (n) { n.remove(); });
+          name = clone.textContent.replace(/\s+/g, ' ').trim();
+        }
+
+        var info = { login: login, name: name };
         userByIdCache[numericId] = info;
         // ログインID→情報の逆引きキャッシュも同時に作る
         if (info.login) { userByLoginCache[info.login] = info; }
@@ -1168,10 +1279,17 @@
   // ログインID → { login, name } の逆引きキャッシュ（ツールチップ用）
   var userByLoginCache = {};
 
-  // ログインIDから情報を解決する。
-  // キャッシュに無ければ、担当者セレクトの全ユーザーを順に引いて
-  // 一致するものを探す（初回のみ。以降はキャッシュヒット）。
+  // ログインIDから情報を解決する（ツールチップ用）。
+  // まずエンドポイント由来の userByLoginMap を見る（正しい login→name）。
+  // 無ければ従来のスクレイプ解決にフォールバックする。
   function resolveUserByLogin(login) {
+    // エンドポイントのキャッシュを最優先（多言語・自分混入の問題が無い）
+    if (userByLoginMap && Object.prototype.hasOwnProperty.call(userByLoginMap, login)) {
+      return Promise.resolve(userByLoginMap[login]);
+    }
+    // まだ未取得ならプリフェッチを起動しておく（次回以降のヒット用）
+    if (!usersFetchStarted) { prefetchUsers(); }
+
     if (Object.prototype.hasOwnProperty.call(userByLoginCache, login)) {
       return Promise.resolve(userByLoginCache[login]);
     }
@@ -2101,7 +2219,7 @@
 
     monacoInstance.editor.registerCommand(
       MENTION_RESOLVE_CMD,
-      function (accessor, modelUri, numericId, lineNumber, atCol) {
+      function (accessor, modelUri, numericId, lineNumber, atCol, insertedText) {
         // modelUri から対象エディタを特定する
         var editors = monacoInstance.editor.getEditors();
         var ed = null;
@@ -2115,8 +2233,27 @@
           if (!info || !info.login) { return; }
           var model = ed.getModel();
           if (!model) { return; }
-          var pos = ed.getPosition();
-          var endCol = pos ? pos.column : (model.getLineContent(lineNumber).length + 1);
+
+          // 置換範囲は「挿入した表示名(insertedText)の長さ」から算出する。
+          // 以前は現在のカーソル位置(ed.getPosition())から endCol を取っていたが、
+          // 別の行に別メンションがあると lineNumber と食い違い、誤った範囲
+          // （他行のメンション）を書き換えてしまう不具合があった。
+          // insertedText は補完で実際に挿入した "@表示名" なので、
+          // atCol からその文字数ぶんが、まさに置換すべき範囲になる。
+          var insLen = (insertedText || '').length;
+          var endCol = atCol + insLen;
+
+          // 念のため、対象範囲の現在のテキストが insertedText と一致するか確認。
+          // ズレている場合（IME確定の差異等）は安全側で何もしない。
+          var lineContent = model.getLineContent(lineNumber);
+          var actual = lineContent.substring(atCol - 1, endCol - 1);
+          if (insertedText && actual !== insertedText) {
+            // フォールバック: 行内で atCol 以降の "@..." を境界まで拾う
+            var tail = lineContent.substring(atCol - 1);
+            var mm = /^@[^\s@]*/.exec(tail);
+            if (mm) { endCol = atCol + mm[0].length; }
+          }
+
           ed.executeEdits('mention-resolve', [{
             range: {
               startLineNumber: lineNumber, startColumn: atCol,
