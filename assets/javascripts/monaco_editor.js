@@ -182,7 +182,7 @@
       h3:          { type: 'line', prefix: '###',  exact: true },
       h4:          { type: 'line', prefix: '####', exact: true },
       ul:          { type: 'line', prefix: '- ',  exact: false },
-      ol:          { type: 'line', prefix: '1. ', exact: false },
+      ol:          { type: 'line', prefix: '1. ', exact: false, ordered: true },
       blockquote:  { type: 'line', prefix: '> ',  exact: false },
       codeBlock:   { type: 'mdfence' },
       image:       function (filename, alt) { return '![' + (alt || '') + '](' + filename + ')'; }
@@ -581,7 +581,11 @@
     // ユーザー一覧をエンドポイントから先読み（id/login/name）
     prefetchUsers();
 
-    monacoInstance.languages.registerCompletionItemProvider('markdown', {
+    // markdown / textile 両方で効かせる。
+    // Textileでも @ログインID はRedmineがメンションとして解決するため、
+    // 挿入文字列・候補生成ロジックは共通でよい（言語IDだけが違う）。
+    ['markdown', 'textile'].forEach(function (lang) {
+    monacoInstance.languages.registerCompletionItemProvider(lang, {
       triggerCharacters: ['@'],
       provideCompletionItems: function (model, position) {
         var lineText = model.getValueInRange({
@@ -629,6 +633,7 @@
 
         return { suggestions: suggestions };
       }
+    });
     });
   }
 
@@ -1545,12 +1550,25 @@
     function open() {
       popup = opts.build();
       if (!popup) { return; }
-      document.body.appendChild(popup);
+
+      // 配置先をフルスクリーン状態に追従させる。
+      // ネイティブFullscreen API は全画面要素の子孫しか描画しないため、
+      // body直下のままだとフルスクリーン中にポップアップが見えない。
+      // ensureTooltipParent が全画面要素を返したら、座標系も
+      // ページ座標→ビューポート座標に切り替える（scrollを足さない）。
+      var fsEl = ensureTooltipParent(popup);
 
       // トリガーボタンの直下に配置
       var rect = btn.getBoundingClientRect();
-      var left = rect.left + window.scrollX;
-      popup.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+      var left, top;
+      if (fsEl) {
+        left = rect.left;
+        top  = rect.bottom + 4;
+      } else {
+        left = rect.left + window.scrollX;
+        top  = rect.bottom + window.scrollY + 4;
+      }
+      popup.style.top  = top + 'px';
       popup.style.left = left + 'px';
 
       // 画面右端からはみ出す場合は左へずらす（要素幅確定後に補正）
@@ -3021,10 +3039,13 @@
     }
 
     // 選択行（複数行対応）の行頭をトグル変換する。
-    // spec: { prefix, exact, textile }
-    //   exact=true  : 見出しなど（Markdown "## " / Textile "h2. "）
-    //   exact=false : リスト・引用（先頭一致で除去）
-    //   textile=true: Textile見出し（"h2." の後に半角スペース1つ。Markdownの "##" とは付与形が異なる）
+    // spec: { prefix, exact, textile, ordered }
+    //   exact=true   : 見出しなど（Markdown "## " / Textile "h2. "）
+    //   exact=false  : リスト・引用（先頭一致で除去）
+    //   textile=true : Textile見出し（"h2." の後に半角スペース1つ。Markdownの "##" とは付与形が異なる）
+    //   ordered=true : Markdown番号付きリスト（"1. " 固定ではなく行ごとに連番。
+    //                  解除は /^\d+\.\s/ で任意の番号に対応する。Textileの "# " は
+    //                  記号固定なので ordered 不要＝従来パスで正しく動く）
     function toggleLineSpec(spec) {
       var sel = editor.getSelection();
       var model = editor.getModel();
@@ -3037,6 +3058,45 @@
       var startLine = sel.startLineNumber;
       var endLine = sel.endLineNumber;
       if (endLine > startLine && sel.endColumn === 1) { endLine--; }
+
+      // ---- Markdown番号付きリスト専用パス ----
+      // 行頭の "数字 + . + 空白" を1セットとして扱う。固定文字列マッチだと
+      // "1. " しか外せず連番が崩れるため、正規表現で判定・除去する。
+      if (spec.ordered) {
+        var ORDERED_RE = /^\d+\.\s/;
+
+        // 全行がすでに番号付きなら解除、1行でも未付与があれば連番を振り直す。
+        var allOrdered = true;
+        for (var c = startLine; c <= endLine; c++) {
+          if (!ORDERED_RE.test(model.getLineContent(c))) { allOrdered = false; break; }
+        }
+
+        var orderedEdits = [];
+        var counter = 1;
+        for (var j = startLine; j <= endLine; j++) {
+          var lc = model.getLineContent(j);
+          var nc;
+          if (allOrdered) {
+            // 解除: 既存の "N. " を除去
+            nc = lc.replace(ORDERED_RE, '');
+          } else {
+            // 付与: 既存番号があれば一旦剥がしてから連番を振る（二重番号・番号ズレ防止）
+            nc = (counter++) + '. ' + lc.replace(ORDERED_RE, '');
+          }
+          orderedEdits.push({
+            range: {
+              startLineNumber: j, startColumn: 1,
+              endLineNumber: j, endColumn: lc.length + 1
+            },
+            text: nc,
+            forceMoveMarkers: true
+          });
+        }
+
+        editor.executeEdits('deco-line-prefix', orderedEdits);
+        editor.focus();
+        return;
+      }
 
       // Textile見出しは "h2. " で1セット（付与時に必ず末尾スペース）。
       // Markdown見出しは "##" + スペースで付与。
