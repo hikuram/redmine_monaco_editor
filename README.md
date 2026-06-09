@@ -42,6 +42,8 @@ Click the table button and a grid appears; just pick the rows × columns with yo
 **Table builder (Excel-like editing)**
 Next to the table button, the "table builder" button opens an Excel-like table editor in a separate tab from the body. You can type directly into cells (IME input works from the first character), add/remove rows and columns, select and reorder by dragging, rename columns by double-clicking the header, sort by column, and paste from Excel or Markdown tables. Insert the finished table into the body with the "Insert as Markdown" / "Insert as Textile" buttons. Use the "Body" tab to return to editing, "+" to add tables, and "×" to close them. Multiple tables can be edited in parallel.
 
+The table builder itself is bundled as a standalone JavaScript library called `textgrid` (MIT license) under `public_dist/textgrid/`. You can reuse it outside of this Redmine plugin as a Markdown / Textile compatible spreadsheet UI. See `public_dist/textgrid/README.md` for details.
+
 **Edit existing tables in place**
 For tables already written in the body, click the table icon that appears at the left of the first row (next to the line gutter) to load it into the table builder. After editing, press "Update" and the original table is rewritten in place. Markdown stays Markdown and Textile stays Textile, so the syntax is never changed unexpectedly. No more lining up `|` characters by hand.
 
@@ -105,7 +107,13 @@ redmine_monaco_editor/
 │   └── stylesheets/monaco_editor.css
 ├── public_dist/
 │   ├── vs/                          # Monaco itself
-│   └── table-builder/               # Table builder (ESM module)
+│   └── textgrid/                    # Table builder library (standalone ESM module)
+│       ├── src/                     #   ESM body (import via src/index.js)
+│       ├── styles/                  #   CSS (loaded automatically)
+│       ├── demo/                    #   Standalone harness for manual testing (optional)
+│       ├── test/                    #   jsdom-based tests
+│       ├── README.md / README.ja.md
+│       └── LICENSE (MIT)
 ├── LICENSE
 └── README.md
 ```
@@ -122,7 +130,7 @@ Put the `redmine_monaco_editor` directory under Redmine's `plugins/`.
 
 ### Step 2: Place Monaco (vs/) directly under public/ ★IMPORTANT★
 
-This is the key step of this plugin. **Copy the contents of `public_dist/` to Redmine's `public/monaco_assets/`.** Both `vs/` (Monaco) and `table-builder/` (table builder) must be served with plain paths under `/monaco_assets/`.
+This is the key step of this plugin. **Copy the contents of `public_dist/` to Redmine's `public/monaco_assets/`.** Both `vs/` (Monaco) and `textgrid/` (table builder library) must be served with plain paths under `/monaco_assets/`.
 
 ```bash
 mkdir -p <REDMINE_ROOT>/public/monaco_assets
@@ -130,13 +138,14 @@ cp -r <REDMINE_ROOT>/plugins/redmine_monaco_editor/public_dist/. \
       <REDMINE_ROOT>/public/monaco_assets/
 ```
 
-> Note: the trailing dot in `public_dist/.` places `vs/` and `table-builder/` directly under `monaco_assets/`. Without the dot you would get an extra `monaco_assets/public_dist/...` level.
+> Note: the trailing dot in `public_dist/.` places `vs/` and `textgrid/` directly under `monaco_assets/`. Without the dot you would get an extra `monaco_assets/public_dist/...` level.
 
-After placing it, you're good if the following file exists:
+After placing it, you're good if the following files exist:
 
 ```
 <REDMINE_ROOT>/public/monaco_assets/vs/loader.js
-<REDMINE_ROOT>/public/monaco_assets/table-builder/index.js
+<REDMINE_ROOT>/public/monaco_assets/textgrid/src/index.js
+<REDMINE_ROOT>/public/monaco_assets/textgrid/styles/textgrid.css
 ```
 
 ### Step 3: Restart Redmine
@@ -157,7 +166,7 @@ That's why only `vs/` is placed directly under `public/`. Files under public are
 
 - `monaco_editor.js` / `monaco_editor.css` … normal plugin assets (served by Redmine via `javascript_include_tag` / `stylesheet_link_tag`)
 - `vs/` … placed at `public/monaco_assets/vs/` and served with plain paths (`/monaco_assets/vs/...`)
-- `table-builder/` … placed at `public/monaco_assets/table-builder/` and served with plain paths (`/monaco_assets/table-builder/index.js`)
+- `textgrid/src/` … placed at `public/monaco_assets/textgrid/src/` and served with plain paths (`/monaco_assets/textgrid/src/index.js`)
 
 The JS side is hard-configured to reference `/monaco_assets/vs` (see `getMonacoBase()` in `monaco_editor.js`). If you want to change the placement, update this function's return value accordingly.
 

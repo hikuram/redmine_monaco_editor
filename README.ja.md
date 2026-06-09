@@ -42,6 +42,8 @@ Markdownはもちろん、コードブロックの中身も言語ごとに色分
 **表ビルダー（Excelライクな表編集）**
 表ボタンの隣の「表ビルダー」ボタンを押すと、本文とは別タブでExcelのような表編集画面が開きます。セルはクリックして直接入力でき、日本語入力（IME）も最初の1文字から欠けません。行・列の追加／削除、ドラッグでの範囲選択・並べ替え、列ヘッダのダブルクリックでの名前編集、列でのソート、ExcelやMarkdown表からのコピー＆ペーストにも対応しています。作った表は「Markdownで挿入」「Textileで挿入」のボタンで本文へ流し込めます。タブは「本文」で編集画面に戻り、「＋」で表を増やし、「×」で閉じられます。複数の表を並行して編集できます。
 
+なお、この表ビルダーの中身は `textgrid` という独立したJavaScriptライブラリ（MITライセンス）として `public_dist/textgrid/` 配下に同梱されています。Redmineプラグイン以外の場所でも、Markdown / Textile 互換のスプレッドシート風UIとして再利用できます。詳細は `public_dist/textgrid/README.ja.md` を参照してください。
+
 **本文の表をそのまま編集**
 本文中にすでに書かれた表は、その先頭行の左端（行番号の脇）に出るテーブルアイコンをクリックすると、表ビルダーへ読み込んで編集できます。編集して「更新」ボタンを押すと、元の表がその場で書き換わります。元がMarkdownならMarkdownのまま、TextileならTextileのままで書き戻すので、記法が勝手に変わることはありません。手で `|` を並べ直す必要がなくなります。
 
@@ -105,7 +107,13 @@ redmine_monaco_editor/
 │   └── stylesheets/monaco_editor.css
 ├── public_dist/                    # 素パス配信するアセット（→ public/monaco_assets/ へ配置）
 │   ├── vs/                          # Monaco本体
-│   └── table-builder/               # 表ビルダー（ESMモジュール）
+│   └── textgrid/                    # 表ビルダーライブラリ（独立ESMモジュール）
+│       ├── src/                     #   ESM本体（src/index.js を import）
+│       ├── styles/                  #   CSS（自動で読み込まれる）
+│       ├── demo/                    #   単体動作確認ハーネス（任意）
+│       ├── test/                    #   jsdomベース動作テスト
+│       ├── README.md / README.ja.md
+│       └── LICENSE (MIT)
 ├── LICENSE
 └── README.md
 ```
@@ -122,7 +130,7 @@ redmine_monaco_editor/
 
 ### ステップ2: 素パス配信アセット（public_dist/）を public 直下へ配置 ★重要★
 
-ここがこのプラグインの肝です。**`public_dist/` の中身を Redmine の `public/monaco_assets/` にコピー**してください。`vs/`（Monaco本体）と `table-builder/`（表ビルダー）の両方が `/monaco_assets/` 配下で素パス配信される必要があります。
+ここがこのプラグインの肝です。**`public_dist/` の中身を Redmine の `public/monaco_assets/` にコピー**してください。`vs/`（Monaco本体）と `textgrid/`（表ビルダーライブラリ）の両方が `/monaco_assets/` 配下で素パス配信される必要があります。
 
 ```bash
 mkdir -p <REDMINE_ROOT>/public/monaco_assets
@@ -130,13 +138,14 @@ cp -r <REDMINE_ROOT>/plugins/redmine_monaco_editor/public_dist/. \
       <REDMINE_ROOT>/public/monaco_assets/
 ```
 
-> 補足: `public_dist/.`（末尾のドット）でコピーすると、`monaco_assets/` 直下に `vs/` と `table-builder/` が並びます。`public_dist`（ドット無し）だと `monaco_assets/public_dist/...` という階層がもう1段できてしまうので注意してください。
+> 補足: `public_dist/.`（末尾のドット）でコピーすると、`monaco_assets/` 直下に `vs/` と `textgrid/` が並びます。`public_dist`（ドット無し）だと `monaco_assets/public_dist/...` という階層がもう1段できてしまうので注意してください。
 
 配置後、次のファイルが存在すればOKです。
 
 ```
 <REDMINE_ROOT>/public/monaco_assets/vs/loader.js
-<REDMINE_ROOT>/public/monaco_assets/table-builder/index.js
+<REDMINE_ROOT>/public/monaco_assets/textgrid/src/index.js
+<REDMINE_ROOT>/public/monaco_assets/textgrid/styles/textgrid.css
 ```
 
 ### ステップ3: Redmineを再起動
@@ -153,13 +162,13 @@ Webサーバ（Puma / Passenger 等）を再起動します。
 
 Redmine 6 のアセットパイプライン（Propshaft）は、アセットをハッシュ付きURL（`/assets/....-<hash>.js`）でのみ配信します。一方 Monaco Editor は、`vs/loader.js` を起点に `vs/editor/...` などのサブファイルを **素のパス（ハッシュ無し）で大量に動的ロード** する設計です。このためPropshaft管理下に置くと素パスが404になり、動きません。
 
-そこで `vs/` などは `public/` 直下に置きます。public配下のファイルはRailsが（Propshaftを介さず）素のパスのまま静的配信するため、Monacoのローダーが正しく動作します。表ビルダー（`table-builder/index.js`）も ESM の動的 `import()` で素パスからロードするため、同じく `public/monaco_assets/` 配下に置きます。
+そこで `vs/` などは `public/` 直下に置きます。public配下のファイルはRailsが（Propshaftを介さず）素のパスのまま静的配信するため、Monacoのローダーが正しく動作します。表ビルダー（`textgrid/src/index.js`）も ESM の動的 `import()` で素パスからロードするため、同じく `public/monaco_assets/` 配下に置きます。
 
 - `monaco_editor.js` / `monaco_editor.css` … 通常のプラグインアセット（`javascript_include_tag` / `stylesheet_link_tag` 経由でRedmineが配信）
 - `vs/` … `public/monaco_assets/vs/` に配置して素パス配信（`/monaco_assets/vs/...`）
-- `table-builder/` … `public/monaco_assets/table-builder/` に配置して素パス配信（`/monaco_assets/table-builder/index.js`）
+- `textgrid/src/` … `public/monaco_assets/textgrid/src/` に配置して素パス配信（`/monaco_assets/textgrid/src/index.js`）
 
-JS側は `/monaco_assets/vs` を参照する固定設定になっています（`monaco_editor.js` 内 `getMonacoBase()`）。表ビルダーはこの値から `/vs` を除いた `/monaco_assets` を基準に `table-builder/index.js` を読み込みます。配置先を変更したい場合はこの関数の戻り値も合わせて変更してください。
+JS側は `/monaco_assets/vs` を参照する固定設定になっています（`monaco_editor.js` 内 `getMonacoBase()`）。表ビルダーはこの値から `/vs` を除いた `/monaco_assets` を基準に `textgrid/src/index.js` を読み込みます。配置先を変更したい場合はこの関数の戻り値も合わせて変更してください。
 
 ## 更新のたびにコピーを自動化したいとき
 
@@ -176,7 +185,7 @@ dest="public/monaco_assets"
 if [ -d "$src" ]; then
     rm -rf "$dest"
     mkdir -p "$dest"
-    # 末尾の /. で中身（vs/ と table-builder/）を dest 直下へ展開する
+    # 末尾の /. で中身（vs/ と textgrid/）を dest 直下へ展開する
     cp -r "$src"/. "$dest"/
 fi
 ```
