@@ -989,22 +989,13 @@ body.monaco-fullscreen-active {
 .monaco-editor .glyph-margin { width: 22px !important; }
 .monaco-editor .margin-view-overlays .cgmr { width: 22px !important; }
 
-/* ============================================================
-   Monaco エディタのホバー表示
-   ------------------------------------------------------------
-   実機 DOM は ".monaco-hover" を使う（Monaco の現行バージョン）。
-   - 短いメッセージ（glyph margin の「表ビルダーで編集」等）でも
-     padding と min-width のせいで背景領域が長く見えていたのを縮める
-   - .monaco-hover-content / .hover-row / .hover-contents の余白も
-     合わせて控えめにする
-   - max-width / min-width はそれぞれ控え、長文のホバーは折り返し
-     せず内容に合わせて伸びるよう min-width: 0
-   - 内側に <p> がある場合、デフォルトのブラウザマージンが効いて
-     縦に空白ができるので margin: 0 にする
-   ============================================================ */
+/* Monaco ホバー（.monaco-hover）の余白・行間を詰めて統一 */
 .monaco-hover {
   padding: 2px 4px !important;
   min-width: 0 !important;
+  /* Redmine の継承(line-height/font-size)を断ち、説明欄/コメント欄を統一 */
+  font-size: 12px !important;
+  line-height: 1.4 !important;
 }
 .monaco-hover .monaco-hover-content,
 .monaco-hover .hover-row,
@@ -1013,33 +1004,127 @@ body.monaco-fullscreen-active {
   padding: 0 !important;
   margin: 0 !important;
   min-width: 0 !important;
+  font-size: 12px !important;
+  line-height: 1.4 !important;
+}
+.monaco-hover .rendered-markdown p,
+.monaco-hover .rendered-markdown ul,
+.monaco-hover .rendered-markdown ol,
+.monaco-hover .rendered-markdown pre {
+  margin: 0 !important;
+  padding: 0 !important;
+  line-height: 1.4 !important;
 }
 .monaco-hover .rendered-markdown p {
   margin: 2px 0 !important;
+  /* Redmine の .tabular p:170px 漏れを潰す */
+  padding: 0 !important;
 }
 
-/* ============================================================
-   Monaco エディタの補完候補（suggestWidget）のドキュメントペイン
-   ------------------------------------------------------------
-   標準では幅が狭く、Description テキストが縦長に折り返されて読みにくい
-   （画像で報告された "tipバナーを表示する" や {{child_pages}} の説明が
-   無駄に縦長になる症状）。
-   - .details (ドキュメントペイン) に min-width を確保
-   - 中の <p> マージンを詰めて余白を抑える
-   ============================================================ */
+/* 補完候補のドキュメントペイン（.details）の幅確保と余白詰め */
 .monaco-editor .suggest-widget .details {
   min-width: 360px;
 }
 .monaco-editor .suggest-widget .details .docs {
   padding: 6px 10px !important;
+  /* Redmine の継承を断ち、説明欄/コメント欄を統一 */
+  font-size: 12px !important;
+  line-height: 1.45 !important;
+}
+/* docs 内ブロック要素の継承余白・170px インデントをリセット */
+.monaco-editor .suggest-widget .details .docs p,
+.monaco-editor .suggest-widget .details .docs ul,
+.monaco-editor .suggest-widget .details .docs ol,
+.monaco-editor .suggest-widget .details .docs pre,
+.monaco-editor .suggest-widget .details .docs blockquote,
+.monaco-editor .suggest-widget .details .rendered-markdown p,
+.monaco-editor .suggest-widget .details .rendered-markdown ul,
+.monaco-editor .suggest-widget .details .rendered-markdown ol,
+.monaco-editor .suggest-widget .details .rendered-markdown pre {
+  margin: 0 !important;
+  padding: 0 !important;
+  text-indent: 0 !important;
+  line-height: 1.45 !important;
 }
 .monaco-editor .suggest-widget .details .docs p,
 .monaco-editor .suggest-widget .details .rendered-markdown p {
   margin: 2px 0 !important;
 }
+/* 使用例のコードブロック（```）を等幅・詰めて表示 */
+.monaco-editor .suggest-widget .details .docs pre,
+.monaco-editor .suggest-widget .details .rendered-markdown pre {
+  padding: 4px 6px !important;
+  margin: 2px 0 !important;
+  text-indent: 0 !important;
+  font-size: 11px !important;
+  line-height: 1.4 !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+}
+.monaco-editor .suggest-widget .details .docs pre code,
+.monaco-editor .suggest-widget .details .docs code,
+.monaco-editor .suggest-widget .details .rendered-markdown pre code,
+.monaco-editor .suggest-widget .details .rendered-markdown code {
+  padding: 0 !important;
+  font-size: inherit !important;
+  line-height: inherit !important;
+  background: transparent !important;
+}
 /* 候補リスト側の .docs（インラインで出る短い説明）も詰める */
 .monaco-editor .suggest-widget .monaco-list-row .docs {
   padding: 2px 6px !important;
+}
+
+/* 行頭余白対策: opale.css の .tabular p:170px が説明欄(tabular内)の
+   補完パネル p に漏れるのを潰す。コメント欄は tabular 外なので元々正常 */
+.monaco-editor .suggest-widget p,
+.monaco-editor .suggest-widget pre,
+.monaco-editor .suggest-widget li,
+.monaco-editor .suggest-widget h1,
+.monaco-editor .suggest-widget h2,
+.monaco-editor .suggest-widget h3,
+/* .tabular 直撃（opale.css の .tabular p:170px を確実に上書き） */
+.tabular .monaco-editor .suggest-widget p,
+.tabular .suggest-widget p,
+.tabular .monaco-overflow-widgets-root .suggest-widget p,
+/* 詳細パネルは fixedOverflowWidgets で .suggest-details 配下に出る
+   （.suggest-widget 経由ではない）ため、こちらを起点に余白を潰す */
+.monaco-editor .suggest-details p,
+.monaco-editor .suggest-details pre,
+.monaco-editor .suggest-details li,
+.monaco-editor .suggest-details h1,
+.monaco-editor .suggest-details h2,
+.monaco-editor .suggest-details h3,
+.suggest-details p,
+.suggest-details-container p,
+.monaco-overflow-widgets-root .suggest-details p,
+.monaco-overflow-widgets-root p.type,
+.monaco-overflow-widgets-root p.auto-wrap,
+.tabular .suggest-details p {
+  padding-left: 0 !important;
+  margin-left: 0 !important;
+  text-indent: 0 !important;
+  /* 行間も Redmine 継承で間延びするため Monaco 標準相当に詰める */
+  line-height: 1.4 !important;
+}
+/* 詳細パネルのコンテナ自体にも行間を固定（子の継承元を断つ） */
+.monaco-editor .suggest-details,
+.monaco-editor .suggest-details .body,
+.monaco-editor .suggest-details .header,
+.suggest-details,
+.suggest-details-container,
+.monaco-overflow-widgets-root .suggest-details {
+  line-height: 1.4 !important;
+}
+/* Monaco が詳細パネル本文に付ける標準クラス（実測で class="type auto-wrap"）
+   への直撃指定。padding-left:5px の出所はここ。詳細度を上げて確実に勝たせる。 */
+.monaco-editor .suggest-widget .details p.type,
+.monaco-editor .suggest-widget .details p.auto-wrap,
+.monaco-editor .suggest-widget p.type,
+.monaco-editor .suggest-widget p.auto-wrap {
+  padding: 0 !important;
+  margin: 2px 0 !important;
+  text-indent: 0 !important;
 }
 
 /* ============================================================
