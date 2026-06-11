@@ -4396,6 +4396,17 @@
     return null;
   }
 
+  // 当該エディタが「ファイル添付できる場所」か判定する。
+  // クリップボード画像ペーストは、純正のアップロード先(filedrop input)が
+  // 存在するフォーム=チケット説明/コメント/Wiki等でのみ機能すべき。
+  // プロジェクト説明やウェルカムメッセージ等、添付フォームが無い画面では
+  // アップロードできないため、記法だけが挿入される不整合を避けて無効化する。
+  function hasAttachmentTarget(ctx) {
+    var form = ctx.textarea.closest('form');
+    if (!form) { return false; }
+    return !!form.querySelector('input[type=file].filedrop');
+  }
+
   // document レベルの paste ハンドラ（ページに1つだけ設置）。
   function onDocumentPaste(e) {
     var cd = e.clipboardData || (e.originalEvent && e.originalEvent.clipboardData);
@@ -4404,6 +4415,11 @@
     // フォーカス中のMonacoエディタが無ければ素通し（通常のフォーム入力等）。
     var ctx = focusedPasteEditor();
     if (!ctx) { return; }
+
+    // 添付フォームが無い画面（プロジェクト説明/ウェルカムメッセージ等）では
+    // クリップボード画像ペーストを無効化する。preventDefault もしないので、
+    // 通常のペースト挙動を妨げない。
+    if (!hasAttachmentTarget(ctx)) { return; }
 
     var images = collectClipboardImages(cd);
     if (images.length === 0) { return; } // テキスト等はMonacoの通常処理に任せる
