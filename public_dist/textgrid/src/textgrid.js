@@ -2144,9 +2144,29 @@ class TableGrid {
   }
 
   _onCopy(e) {
-    const inp = this.gridDiv.querySelector('textarea.tg-cell-ta');
-    // 編集中 textarea に通常のテキスト選択がある場合はブラウザ既定に任せる。
-    if (inp && inp.selectionStart !== inp.selectionEnd) { return; }
+    // 「セル内テキストのコピー」と「表全体のコピー」を正しく切り分ける。
+    //
+    //   - textarea にフォーカスがある状態で、かつ「単一セル選択」のとき
+    //     → ユーザーはセル内のテキストをコピーしようとしている。
+    //       テキスト選択が無くても（ゼロ幅でも）、表全体を取りに行くのは
+    //       過剰なので、ブラウザ既定に任せる。
+    //       （実機例: ユーザーは右下のセルの文字を選んでコピーしたつもり
+    //         なのに、表全体が貼り付けられてしまうバグの原因）
+    //   - textarea にフォーカスがある状態で、複数セル/行/列の範囲選択中
+    //     → 表ビルダーが範囲コピーをハンドル（textileなら結合・装飾も保持）。
+    //   - textarea にフォーカスが無く、行/列ヘッダ等で範囲選択中
+    //     → 表ビルダーが範囲コピーをハンドル。
+    //
+    // 旧実装は gridDiv.querySelector('textarea') で「先頭セルの textarea」
+    // しか見ていなかったため、ユーザーがどのセル内で選択していても先頭
+    // セルが「未選択」だと判定され、表全体コピーが走ってしまっていた。
+    const ae = document.activeElement;
+    const inCellTa = ae && ae.classList && ae.classList.contains('tg-cell-ta')
+      && this.gridDiv.contains(ae);
+    if (inCellTa && this.selMode === 'cell' && !this.isRange()) {
+      // 単一セル編集中 → ブラウザ既定（セル内テキストのコピー）に任せる
+      return;
+    }
     const sel = this.getSelectedGrid();
     // テキスト形式: 開いているチケットのフォーマットに合わせる。
     //   Textile: 装飾・結合・揃えをすべて含む Textile 構文
@@ -2164,6 +2184,16 @@ class TableGrid {
 
   _onPaste(e) {
     if (this._pasting) { return; }
+    // _onCopy と対称: textarea にフォーカスがあり単一セル編集中なら、
+    // 貼り付けはブラウザ既定（textarea へのテキスト貼り付け）に任せる。
+    // これにより、改行を含むセル内テキストを別のセルへ貼り付けるときに、
+    // 「| や改行があると表として解釈されてしまう」誤動作が起きない。
+    const ae = document.activeElement;
+    const inCellTa = ae && ae.classList && ae.classList.contains('tg-cell-ta')
+      && this.gridDiv.contains(ae);
+    if (inCellTa && this.selMode === 'cell' && !this.isRange()) {
+      return;
+    }
     const text = (e.clipboardData || window.clipboardData).getData('text');
     if (!text) { return; }
     // パース順:
@@ -2227,6 +2257,51 @@ class TableGrid {
       const dataRows = parsedRows.slice(dataStartIdx);
       const dataStyleRows = parsedStyles ? parsedStyles.slice(dataStartIdx) : null;
       const dataMergeRows = parsedMerges ? parsedMerges.slice(dataStartIdx) : null;
+
+      // Excel互換: 1×1のコピー内容 + 範囲選択への貼り付けは、
+      // 選択範囲全体に同じ値（と装飾）をタイル状に展開する。
+      // これは「1セルのテキストを複数セルに一括反映」したいよくある操作。
+      // 判定条件:
+      //   - クリップボード内容が単一値（ヘッダ行なし or データ部1×1）
+      //   - 貼り付け先が範囲選択 (cell/row/col いずれの範囲選択も対象)
+      const isSingleValue = !headerRow
+        && dataRows.length === 1
+        && dataRows[0].length === 1;
+      if (isSingleValue && (this.isRange() || this.selMode === 'row' || this.selMode === 'col')) {
+        const val = dataRows[0][0];
+        const style = (dataStyleRows && dataStyleRows[0]) ? dataStyleRows[0][0] : null;
+        // 範囲の四隅を選択モード別に決める
+        let r1, r2, c1, c2;
+        if (this.selMode === 'row') {
+          r1 = Math.min(this.sel.r, this.sel.r2);
+          r2 = Math.max(this.sel.r, this.sel.r2);
+          c1 = 0; c2 = this.sheet.columns.length - 1;
+        } else if (this.selMode === 'col') {
+          c1 = Math.min(this.sel.c, this.sel.c2);
+          c2 = Math.max(this.sel.c, this.sel.c2);
+          r1 = 0; r2 = this.sheet.data.length - 1;
+        } else {
+          const b = this.selBounds();
+          r1 = b.r1; r2 = b.rr; c1 = b.c1; c2 = b.cc;
+        }
+        // 結合セルの飲み込まれ側には書き込まない（主セルにだけ値を入れる）
+        for (let r = r1; r <= r2; r++) {
+          for (let c = c1; c <= c2; c++) {
+            const m = this.sheet.cellMerges ? (this.sheet.cellMerges[r] || [])[c] : null;
+            if (m && m.mergedBy) { continue; } // 飲み込まれ側はスキップ
+            this.sheet.data[r][c] = val;
+            if (style) {
+              if (!this.sheet.cellStyles) {
+                this.sheet.cellStyles = this.sheet.data.map((row) => row.map(() => null));
+              }
+              this.sheet.cellStyles[r][c] = Object.assign({}, style);
+            }
+          }
+        }
+        this.render();
+        this._fireChange();
+        return; // 通常の展開処理はスキップ
+      }
 
       const sx = this.sel.c, sy = this.sel.r;
       const bodyRows = dataRows.length;

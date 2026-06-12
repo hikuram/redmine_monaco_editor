@@ -15,11 +15,18 @@ api.openForText(src,'textile',()=>({ok:true}),'k1',()=>{});
 console.log('\n[1] コーナーセル相当: グリッドにcopyイベントを起こす');
 // グリッドDOMにアクセス
 const grid=wrapper.querySelector('.tg-grid-host > div') || wrapper.querySelector('.tg-table').parentElement;
-// テーブル全体を選択した状態にしたいが、APIが見えないので、textareaフォーカスを使う
-// コーナーは「左上のth.tg-corner」、それをクリックすると全選択になるはず。
+// 全選択にする: 左上コーナーへの mousedown が onMouseDown ルートを通り、
+// selMode='cell' で全範囲(0..rmax,0..cmax)を選択する。
+// （corner.click() だと click イベントしか発火せず、表ビルダーの mousedown
+//   ハンドラが起動しない jsdom 環境のため、明示的に mousedown を投げる。）
 const corner=wrapper.querySelector('th.tg-corner');
 if (corner) {
-  corner.click(); // 全選択
+  // textareaのフォーカスを明示的に外す（jsdomは grid.focus() でも外れない）
+  if (document.activeElement && document.activeElement.tagName==='TEXTAREA') {
+    document.activeElement.blur();
+  }
+  const mde = new window.MouseEvent('mousedown', { bubbles: true, cancelable: true });
+  corner.dispatchEvent(mde);
 }
 // その後 copy イベントを発火
 const cb=new CB();
