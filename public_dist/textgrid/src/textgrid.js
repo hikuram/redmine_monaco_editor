@@ -1168,6 +1168,11 @@ class TableGrid {
       this.selMode = 'cell';
       this.sel = { r: 0, c: 0, r2: this.sheet.data.length - 1, c2: this.sheet.columns.length - 1 };
       this.render(); grid.focus();
+      // 範囲選択 UI と textarea のブラウザネイティブ選択が二重に出ないよう、
+      // ネイティブ側のテキスト選択をクリアする。
+      if (window.getSelection) {
+        try { window.getSelection().removeAllRanges(); } catch (_) {}
+      }
       return;
     }
     // 行番号 → 行選択
@@ -1176,7 +1181,7 @@ class TableGrid {
       e.preventDefault();
       const r = parseInt(rh.dataset.r, 10);
       if (e.shiftKey && this.selMode === 'row') { this.sel.r2 = r; }
-      else { this.selMode = 'row'; this.sel = { r, c: 0, r2: r, c2: 0 }; this.dragging = 'row'; }
+      else { this.selMode = 'row'; this.sel = { r, c: 0, r2: r, c2: 0 }; this.dragging = 'row'; this.gridDiv.classList.add('tg-dragging'); }
       this.render(); grid.focus();
       return;
     }
@@ -1193,7 +1198,7 @@ class TableGrid {
       }
       this.lastHeadClick = { c, t: now };
       if (e.shiftKey && this.selMode === 'col') { this.sel.c2 = c; }
-      else { this.selMode = 'col'; this.sel = { r: 0, c, r2: 0, c2: c }; this.dragging = 'col'; }
+      else { this.selMode = 'col'; this.sel = { r: 0, c, r2: 0, c2: c }; this.dragging = 'col'; this.gridDiv.classList.add('tg-dragging'); }
       this.render(); grid.focus();
       return;
     }
@@ -1260,13 +1265,24 @@ class TableGrid {
     if (!this.dragMaybe.started) {
       if (r === this.dragMaybe.r && c === this.dragMaybe.c) { return; }
       this.dragMaybe.started = true;
+      this.gridDiv.classList.add('tg-dragging');
       this.selMode = 'cell';
       this.sel = { r: this.dragMaybe.r, c: this.dragMaybe.c, r2: r, c2: c };
       this.render();
+      // ドラッグ開始時点で既にブラウザがテキスト選択を作っていることがある
+      // （特に下→上、右→左方向のドラッグで顕著）。クラス付与だけでは抑止
+      // できないので、明示的にクリアする。
+      if (window.getSelection) {
+        try { window.getSelection().removeAllRanges(); } catch (_) {}
+      }
       return;
     }
     if (r === this.sel.r2 && c === this.sel.c2) { return; }
     this.sel.r2 = r; this.sel.c2 = c;
+    // ドラッグ継続中も、新たに発生したテキスト選択が無いか念のためクリア。
+    if (window.getSelection) {
+      try { window.getSelection().removeAllRanges(); } catch (_) {}
+    }
     this.render();
   }
 
@@ -1281,6 +1297,8 @@ class TableGrid {
   }
 
   _onDocMouseUp() {
+    // ドラッグ中の user-select 抑止クラスを必ず外す
+    if (this.gridDiv) { this.gridDiv.classList.remove('tg-dragging'); }
     if (this.colResize) { this.colResize = null; document.body.style.cursor = ''; this.render(); return; }
     if (this.dragging === 'rowmove' && this.rowMove) {
       const from = this.rowMove.from, to = this.rowMove.to;
@@ -1294,16 +1312,30 @@ class TableGrid {
       this.commitColMove(from, to);
       return;
     }
+    // 範囲選択ドラッグの完了時、ブラウザ標準の「ドラッグ過程で通過した
+    // textarea 内のテキスト選択」が残り続けると、表ビルダー独自の薄緑
+    // ハイライトに加えて青い反転表示が二重に見えて分かりづらい。
+    // 範囲選択モードに入っていた場合は明示的に getSelection().removeAllRanges
+    // でブラウザ側のテキスト選択をクリアする。
     if (this.dragging) {
       const wasRange = this.isRange() || this.selMode !== 'cell';
       this.dragging = false;
-      if (wasRange) { this.gridDiv.focus(); }
+      if (wasRange) {
+        this.gridDiv.focus();
+        if (window.getSelection) {
+          try { window.getSelection().removeAllRanges(); } catch (_) {}
+        }
+      }
     }
     // セルドラッグ範囲が確定したら、textarea からフォーカスを外し
     // グリッドにフォーカスを移す（Delete/Backspace を拾えるように）。
     if (this.dragMaybe && this.dragMaybe.started) {
       if (document.activeElement && document.activeElement.blur) { document.activeElement.blur(); }
       this.gridDiv.focus();
+      // 同じ理由でテキスト選択もクリアする
+      if (window.getSelection) {
+        try { window.getSelection().removeAllRanges(); } catch (_) {}
+      }
     }
     this.dragMaybe = null;
   }
