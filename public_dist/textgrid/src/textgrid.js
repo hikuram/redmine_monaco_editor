@@ -55,10 +55,13 @@
  * ============================================================ */
 
 // 空の matrix を生成（既定 3 列 × 3 行）。
+// ヘッダ名は「列1, 列2, 列3」というニュートラルな名前で、ユーザーが用途に
+// 合わせて自由に書き換える前提。表ビルダー以外の表作成機能（Monacoエディタ
+// から直接挿入する表テンプレート等）と命名を揃えるため、この形にしている。
 function createMatrix(name) {
   return {
     name: name,
-    columns: ['項目', '状態', '担当'],
+    columns: ['列1', '列2', '列3'],
     data: [['', '', ''], ['', '', ''], ['', '', '']],
     cellStyles: null,
     headerStyles: null,
@@ -667,15 +670,29 @@ class TableGrid {
     this.onChange = null; // 編集が起きたときに呼ばれるフック（バインドタブのdirty検知用）
 
     // Undo / Redo 用の履歴スタック（スナップショット方式）
-    // 装飾・揃え・行列追加削除・結合解除・ペーストの直前に pushHistory() で
-    // 現在の matrix のディープコピーを undoStack に積む。
+    // 装飾・揃え・行列追加削除・結合・ペースト・行列移動の直前に
+    // pushHistory() で現在の matrix のディープコピーを undoStack に積む。
     // undo() で undoStack から取り出して redoStack に積みつつ、取り出した
     // スナップショットを sheet に適用する。
-    // セル値の文字入力編集（textareaタイプ）は対象外。textarea自身の
-    // ブラウザ既定 undo に任せる。
+    //
+    // セル値の文字入力編集もこの履歴にまとめる（Excel に近い挙動）。
+    // 1セル内の連続文字入力は1ステップにまとめるため、編集開始時の値を
+    // _pendingEdit に保持し、セルを離れる（フォーカス移動、Enter、Tab、blur、
+    // 他の構造的操作の直前）タイミングで _commitPendingEdit() を呼ぶ。
+    // これで「セルAに"abc"と入力 → セルBに"xyz"と入力 → Undo」で
+    // セルBが空に戻り、もう一度Undoでセルが空に戻る、という単位になる。
     this.undoStack = [];
     this.redoStack = [];
     this.UNDO_LIMIT = 50;
+    // ペンディングなセル編集の追跡:
+    //   { r, c, originalValue } | null
+    //   originalValue は編集開始時点（フォーカスを得た瞬間）のセル値。
+    //   セルを離れる時点で、現在のセル値と異なれば履歴ポイントを作る。
+    this._pendingEdit = null;
+    // Ctrl+Z / Ctrl+Y を有効化するか（コンストラクタ呼び出し後に外部から設定）。
+    // 既定は false（ボタンのみ）。Vivaldi 等でブラウザの戻るジェスチャと
+    // 衝突するため、明示的に有効化する設計にしている。
+    this.enableShortcutKeys = false;
 
     this.gridDiv = document.createElement('div');
     this.gridDiv.className = 'tg-grid';
@@ -705,7 +722,10 @@ class TableGrid {
 
   // ---- 履歴: 現状のスナップショットを undoStack に積む ----
   // 操作の「直前」に呼ぶこと。redoStack はクリアされる（新しい分岐が発生したため）。
+  // 既にペンディングなセル編集がある場合は、構造的操作の前に1ステップとして
+  // 先に確定する。これによって「セル編集 → 構造変更」が2ステップで戻せる。
   pushHistory() {
+    if (this._pendingEdit) { this._commitPendingEdit(); }
     this.undoStack.push(this._snapshot());
     if (this.undoStack.length > this.UNDO_LIMIT) {
       this.undoStack.shift();
@@ -715,7 +735,10 @@ class TableGrid {
 
   // ---- 履歴: undo / redo ----
   // 戻り値: true = 実行した / false = スタックが空
+  // 呼び出し時にペンディングなセル編集があれば、まずそれを履歴に積んでから
+  // 1ステップ戻す。これで「セル編集中に Undo」しても期待通り編集が戻る。
   undo() {
+    if (this._pendingEdit) { this._commitPendingEdit(); }
     if (!this.undoStack.length) { return false; }
     const snap = this.undoStack.pop();
     this.redoStack.push(this._snapshot());
@@ -723,6 +746,7 @@ class TableGrid {
     return true;
   }
   redo() {
+    if (this._pendingEdit) { this._commitPendingEdit(); }
     if (!this.redoStack.length) { return false; }
     const snap = this.redoStack.pop();
     this.undoStack.push(this._snapshot());
@@ -930,6 +954,17 @@ class TableGrid {
       ta.addEventListener('input', (e) => self.onCellInput(e));
       ta.addEventListener('keydown', (e) => self.onCellKeydown(e));
       ta.addEventListener('focus', (e) => self.onCellFocus(e));
+      // セルを離れる（フォーカスが外れる）瞬間にペンディング編集を確定。
+      // 「セルを編集 → 表ビルダーの外側をクリック」のようなケースで
+      // 履歴ポイントを作るのに必要。focusout でなく blur を使うのは、
+      // 表ビルダー内のセル間移動では blur → 次のセルの focus の順に
+      // 発火するので、focus 側の重複確定と協調できるため。
+      ta.addEventListener('blur', () => {
+        if (self._pendingEdit) {
+          const committed = self._commitPendingEdit();
+          if (committed && typeof self.onChange === 'function') { self.onChange(); }
+        }
+      });
     });
     this.equalizeRows();
 
@@ -951,9 +986,43 @@ class TableGrid {
   // 編集（データ書き換え）が起きたことを通知する。バインドタブの dirty 検知用。
   _fireChange() { if (typeof this.onChange === 'function') { this.onChange(); } }
 
+  // ペンディングなセル編集を「履歴1ステップ」として確定する。
+  // - セルを離れる前（フォーカス移動、Enter、Tab、blur）に呼ぶ。
+  // - 構造的な操作（装飾、行追加、ペースト等）で pushHistory() を呼ぶ前に
+  //   呼ぶことで、セル編集 → 構造変更 の順に2ステップで Undo できる。
+  // - 編集開始時の値と現在値が同じなら何もしない（無意味な履歴を作らない）。
+  // 戻り値: true = 履歴に積んだ / false = 積まなかった
+  _commitPendingEdit() {
+    if (!this._pendingEdit) { return false; }
+    const { r, c, originalValue } = this._pendingEdit;
+    this._pendingEdit = null;
+    if (this.sheet.data[r] == null) { return false; }
+    const cur = this.sheet.data[r][c];
+    if (cur === originalValue) { return false; }
+    // 履歴に積むのは「編集前のスナップショット」。pushHistory は現在の matrix を
+    // 積むので、いったん編集前の値に戻してから push、その後現在値へ戻す。
+    this.sheet.data[r][c] = originalValue;
+    this.undoStack.push(this._snapshot());
+    if (this.undoStack.length > this.UNDO_LIMIT) { this.undoStack.shift(); }
+    this.redoStack = [];
+    this.sheet.data[r][c] = cur;
+    return true;
+  }
+
   onCellInput(e) {
     const ta = e.target;
     const r = parseInt(ta.dataset.r, 10), c = parseInt(ta.dataset.c, 10);
+    // 編集開始の追跡: このセルでの最初の input イベントなら originalValue を記録。
+    // 既にペンディング中の編集が別セルのものなら、そちらを先に確定する
+    // （フォーカス移動を経由せずに input が来ることは普通ないが、念のため）。
+    if (this._pendingEdit && (this._pendingEdit.r !== r || this._pendingEdit.c !== c)) {
+      this._commitPendingEdit();
+    }
+    if (!this._pendingEdit) {
+      // 編集前の値を記録（ta.value はもう新しい値が入っているので、
+      // 直前まで sheet に保持されていた値を使う）。
+      this._pendingEdit = { r, c, originalValue: this.sheet.data[r][c] };
+    }
     this.sheet.data[r][c] = ta.value;
     this.equalizeRows();
     this._fireChange();
@@ -966,10 +1035,17 @@ class TableGrid {
     // 右クリックした瞬間に範囲が単一セルへ潰れ、メニューから装飾を適用しても
     // そのセル1つにしか効かなくなる。
     if (this._suppressFocusReselect) { return; }
+    const newR = parseInt(ta.dataset.r, 10), newC = parseInt(ta.dataset.c, 10);
+    // 別のセルへフォーカスが移ったら、前のセルでの編集を履歴に確定。
+    if (this._pendingEdit && (this._pendingEdit.r !== newR || this._pendingEdit.c !== newC)) {
+      this._commitPendingEdit();
+      // ボタン状態の更新（履歴に積まれた直後）
+      if (typeof this.onChange === 'function') { this.onChange(); }
+    }
     // 直前が「単一セルでない選択」（行/列選択 または セル範囲選択）だったか。
     // これに該当する場合はフォーカスで選択解除し、単一セル編集へ移る。
     const wasMulti = (this.selMode !== 'cell') || this.isRange();
-    this.sel = { r: parseInt(ta.dataset.r, 10), c: parseInt(ta.dataset.c, 10) };
+    this.sel = { r: newR, c: newC };
     this.sel.r2 = this.sel.r; this.sel.c2 = this.sel.c; this.selMode = 'cell';
     if (wasMulti) { this.render(); return; }
     // 通常のセル間移動: 再描画せず class だけ付け替え（フォーカス維持）
@@ -1459,7 +1535,18 @@ class TableGrid {
       if (e2.isComposing || e2.keyCode === 229) { return; }
       if (e2.key === 'Enter') { e2.preventDefault(); commit(); }
       else if (e2.key === 'Escape') { e2.preventDefault(); cancel(); }
-      else if (e2.key === 'Tab') { e2.preventDefault(); commit(); }
+      else if (e2.key === 'Tab') {
+        // Excel風: Tab → 右の列のヘッダ編集へ / Shift+Tab → 左の列のヘッダ編集へ
+        // 端の列で進行方向側のTabは、commit だけして編集モードを抜ける。
+        e2.preventDefault();
+        const next = e2.shiftKey ? c - 1 : c + 1;
+        commit();
+        if (next >= 0 && next < this.sheet.columns.length) {
+          // commit() で render() 後にDOMが再構築されているので、新しい
+          // <th> を取り直してから次の編集を開始する。
+          this.startHeaderEdit(next);
+        }
+      }
       e2.stopPropagation();
     };
     input.addEventListener('keydown', onKey);
@@ -2046,10 +2133,40 @@ class TableGrid {
   }
 
   _onGridKeydown(e) {
-    // Undo/Redo はキーボードショートカット（Ctrl+Z など）ではなく
-    // ツールバーのボタンで提供する。理由は Vivaldi のように Ctrl+Z を
-    // ブラウザ独自のジェスチャ（戻る）に取られるブラウザがあり、
-    // Webページ側で確実に preventDefault できないため。
+    // Ctrl+Z / Ctrl+Y のショートカット対応（enableShortcutKeys=true のときのみ）。
+    // 既定では無効（ボタンのみ）。Vivaldi 等で Ctrl+Z がブラウザ独自の
+    // 戻るジェスチャに取られるため、明示的に有効化する設計。
+    // 有効時は preventDefault でブラウザ側の挙動を抑止する。
+    // textarea にフォーカスがあるときも、表ビルダー独自のグローバル履歴を
+    // 使う（textarea 内部の undo は使わない）。
+    if (this.enableShortcutKeys && (e.ctrlKey || e.metaKey)) {
+      const k = e.key.toLowerCase();
+      // Ctrl+Shift+Z または Ctrl+Y で Redo、Ctrl+Z で Undo
+      if (k === 'z' && e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (this.redo()) {
+          if (typeof this.onChange === 'function') { this.onChange(); }
+        }
+        return;
+      }
+      if (k === 'z') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (this.undo()) {
+          if (typeof this.onChange === 'function') { this.onChange(); }
+        }
+        return;
+      }
+      if (k === 'y') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (this.redo()) {
+          if (typeof this.onChange === 'function') { this.onChange(); }
+        }
+        return;
+      }
+    }
     if (e.key === 'Delete' || e.key === 'Backspace') {
       // 実際にフォーカスされている textarea を見る（先頭セルを拾わない）。
       // 単一セル編集中はブラウザ既定のテキスト編集（1文字削除）に任せる。
@@ -2697,14 +2814,40 @@ class TableGrid {
  * 6. 右クリックメニュー（モジュール内で1つを使い回す）
  * ============================================================ */
 let _ctxEl = null;
+// 右クリックメニューを置くべきコンテナを返す。
+// 通常は document.body だが、フルスクリーンモード時はフルスクリーン化
+// された要素の中に置かないと表示されない（ブラウザのフルスクリーンAPIは
+// 該当要素とその子孫しか描画しないため）。
+// Monaco Editor のフルスクリーンモードや、ブラウザネイティブの
+// requestFullscreen() で表ビルダーがフルスクリーン要素の中に入っている
+// 場合に、ここで動的に親を切り替える。
+function getCtxContainer() {
+  // 標準: document.fullscreenElement
+  // ベンダープリフィクス (Safari/旧Edge) も一応見る
+  return document.fullscreenElement
+    || document.webkitFullscreenElement
+    || document.mozFullScreenElement
+    || document.msFullscreenElement
+    || document.body;
+}
 function ensureCtx() {
-  if (_ctxEl) { return _ctxEl; }
-  _ctxEl = document.createElement('div');
-  _ctxEl.className = 'tg-ctxmenu';
-  document.body.appendChild(_ctxEl);
-  document.addEventListener('mousedown', (e) => { if (!_ctxEl.contains(e.target)) { hideCtx(); } }, true);
-  window.addEventListener('blur', hideCtx);
-  window.addEventListener('scroll', hideCtx, true);
+  if (!_ctxEl) {
+    _ctxEl = document.createElement('div');
+    _ctxEl.className = 'tg-ctxmenu';
+    document.addEventListener('mousedown', (e) => { if (!_ctxEl.contains(e.target)) { hideCtx(); } }, true);
+    window.addEventListener('blur', hideCtx);
+    window.addEventListener('scroll', hideCtx, true);
+    // フルスクリーン状態が変わったらメニューを閉じる（古い親の中で開いた
+    // ままだと、フルスクリーン解除後に画面外に取り残されるため）。
+    document.addEventListener('fullscreenchange', hideCtx);
+    document.addEventListener('webkitfullscreenchange', hideCtx);
+  }
+  // 毎回コンテナを評価し、必要なら付け替える。
+  // フルスクリーンに入った/出た直後でも、次の右クリックで正しい場所に移る。
+  const container = getCtxContainer();
+  if (_ctxEl.parentNode !== container) {
+    container.appendChild(_ctxEl);
+  }
   return _ctxEl;
 }
 function hideCtx() { if (_ctxEl) { _ctxEl.style.display = 'none'; } }
@@ -3042,6 +3185,10 @@ export function initTableBuilder(ctx) {
       // Textile モードかどうかを Grid に教える（右クリックメニューの装飾項目の
       // 表示出し分けに使う）。
       tb.grid.textileMode = (ctx.format === 'textile');
+      // Ctrl+Z / Ctrl+Y のショートカット有効化（ctx.enableShortcutKeys=true のとき）。
+      // 既定は false（ボタンのみ）。ホスト側のブラウザ独自ジェスチャと衝突する
+      // ケース（Vivaldi等）を避けるため、明示的に有効化する設計にしている。
+      tb.grid.enableShortcutKeys = !!ctx.enableShortcutKeys;
       // バインドタブなら編集で dirty を立てる + ボタン状態を更新
       if (tb.bound) {
         const b = tb.bound;
@@ -3148,6 +3295,8 @@ export function initTableBuilder(ctx) {
   function copyActive() {
     const g = activeGrid();
     if (!g) { return; }
+    // ペンディングなセル編集があれば履歴に確定（書き出し前に整合性を取る）。
+    if (g._pendingEdit) { g._commitPendingEdit(); syncUndoButtons(); }
     const data = g.getDataInOriginalOrder();
     const styles = g.getStylesInOriginalOrder();
     const text = (ctx.format === 'textile')
@@ -3164,6 +3313,8 @@ export function initTableBuilder(ctx) {
     if (!tb || !tb.bound) { return false; }
     const g = tb.grid;
     if (!g) { return false; }
+    // ペンディングなセル編集があれば履歴に確定。
+    if (g._pendingEdit) { g._commitPendingEdit(); syncUndoButtons(); }
     // ソートは一時表示。書き戻しは元の行順で行う。
     const data = g.getDataInOriginalOrder();
     const styles = g.getStylesInOriginalOrder();

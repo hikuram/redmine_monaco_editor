@@ -77,6 +77,7 @@ python3 -m http.server 8000
 | `t` | `(key, fallback) => string` | はい | i18n コールバック。fallback をそのまま返せばOK |
 | `copy` | `(text: string) => void` | はい | 「表をコピー」ボタンが押されたときに呼ばれる |
 | `showEditor` | `() => void` | はい | 表ビルダーを閉じて元のエディタに戻る時に呼ばれる |
+| `enableShortcutKeys` | `boolean` | いいえ | `true` にすると Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z で Undo / Redo を呼べる。既定は `false`（ツールバーのボタンのみ）。Vivaldi など Ctrl+Z をブラウザ独自のジェスチャ（戻る）に取るブラウザと衝突するため、明示的に有効化する設計。 |
 
 ### API
 

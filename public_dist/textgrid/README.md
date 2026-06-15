@@ -74,6 +74,7 @@ python3 -m http.server 8000
 | `t` | `(key, fallback) => string` | yes | i18n callback; can be a passthrough of `fallback` |
 | `copy` | `(text: string) => void` | yes | Called when the "Copy table" button is pressed |
 | `showEditor` | `() => void` | yes | Called to close the builder and return to the original editor |
+| `enableShortcutKeys` | `boolean` | no | When `true`, Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z trigger Undo / Redo. Default is `false` (toolbar buttons only). Some browsers (e.g. Vivaldi) bind Ctrl+Z to a native "back" gesture, so this is opt-in. |
 
 ### API surface
 
