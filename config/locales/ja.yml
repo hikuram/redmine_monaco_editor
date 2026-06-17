@@ -108,6 +108,29 @@ ja:
     ticket_not_found: "チケットが見つかりません"
     note_prefix: "注記#"
 
+    # 変更履歴(diff)ドロップダウン
+    history_btn: "変更履歴"
+    history_btn_tip: "過去の説明欄の差分を表示"
+    history_dropdown_title: "比較する差分を選択"
+    history_to_next: "次の版"
+    history_to_current: "現在"
+    history_creation: "作成時"
+    history_empty: "変更履歴はありません"
+    history_truncated_note: "古い履歴は省略されています"
+
+    # 相対時刻ラベル (Blame ヒント用)
+    rel_just_now: "たった今"
+    rel_minutes_ago: "分前"
+    rel_hours_ago: "時間前"
+    rel_days_ago: "日前"
+    rel_months_ago: "か月前"
+    rel_years_ago: "年前"
+
+    # Blame ツールチップ
+    lines_suffix: "行"
+    no_desc_change: "説明欄の変更はありません"
+    show_diff: "差分を見る"
+
     # 個人設定画面（My account）
     pref_section: "Monaco Editor"
     pref_enabled: "Monaco Editor を使用する"

@@ -86,6 +86,18 @@ Each user can also choose the editor font size from their "My account" preferenc
 **Fullscreen mode**
 A fullscreen button sits at the top-right of the editor toolbar. Click it to expand just the editor to fill the whole screen, so you can focus on writing long documents. Press the button again or hit ESC to return to normal.
 
+**Edit-time change markers**
+While you're editing, a colored bar shows up in the gutter to point out what you've added/changed/removed compared to when you opened the editor: green for added lines, blue for changed lines, and a small red triangle for deleted positions. Click any marker to open an inline panel that shows the original text. From there, you can press the ↶ button to revert just that change (and Ctrl+Z still works to undo the revert). The diff itself is computed by a built-in git-compatible Myers implementation, so the result matches what you would see in `git diff` (with VS Code-style hunk pairing on top).
+
+**Description change history & diff view (issues only)**
+For a ticket's description field, you can browse past versions via the clock icon in the toolbar. The dropdown lists every prior journal that touched the description as `#NoteNumber  Author  Date`, paired with two options: "→ next version" and "→ current". Pick one and the editor splits into a side-by-side diff view (old on the left, new on the right, both read-only) with red/green line backgrounds and `-`/`+` glyphs. Scrolling is synchronized so corresponding lines stay aligned. Close the diff view by pressing the **Edit** button, the `×` in the top-right, or the **ESC** key — your in-progress edits are preserved untouched.
+
+**Inline blame hint (issues only)**
+While editing a ticket description, a faint annotation appears at the end of the line your cursor is on, showing who first wrote that line: `Author · relative date · #NoteNumber`. Lines you just typed (not yet saved to any journal) get no annotation, the same as VS Code's Git blame. The hint reads its data from the same change-history snapshot used by the diff view, so it works fully offline with no extra requests.
+
+**Blame hover card**
+Hover the inline blame hint for one second and a richer card pops up next to the line, showing the author, both relative and absolute dates, the note number badge, and a `+N / -M` summary of how many lines that journal added or removed from the description. A **Show diff** button on the card jumps straight to the side-by-side diff for that particular update. The card stays open while you move the mouse over it, so you can click through. If the journal didn't touch the description, no card is shown.
+
 ## Tested environment
 
 - Redmine 6.1 (Propshaft environment)

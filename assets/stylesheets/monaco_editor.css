@@ -1175,3 +1175,546 @@ body.monaco-fullscreen-active {
   opacity: 1;
   transform: translateY(0);
 }
+
+/* ============================================================
+   編集差分マーカー（gutter）
+   ------------------------------------------------------------
+   開いた時点の本文を基準に、編集中の差分を行装飾マージンへ出す。
+     追加行   → 緑の縦線
+     変更行   → 青の縦線
+     削除位置 → 赤い三角（行を塗らず、行の上端＝行間に出す）
+   glyph margin（表ビルダーのアイコン）とは別レーンなので競合しない。
+   ============================================================ */
+.monaco-editor .mte-diff-added,
+.monaco-editor .mte-diff-modified {
+  width: 3px !important;
+  margin-left: 2px;
+  cursor: pointer;
+}
+.monaco-editor .mte-diff-added {
+  background-color: #2ea043; /* 緑（追加） */
+}
+.monaco-editor .mte-diff-modified {
+  background-color: #0969da; /* 青（変更） */
+}
+
+/* 削除マーカー: VS Code 流の行間三角。行は塗らず、対象行の上端に
+   小さな左向き赤三角を ::before で描く（行高には影響しない）。
+   要素本体には透明な幅を持たせて、クリック判定領域を確保する
+   (::before は pointer events を受けないため、親要素でクリックを受ける)。 */
+.monaco-editor .mte-diff-removed {
+  position: relative;
+  width: 8px !important;        /* クリック判定の幅(背景は透明) */
+  background: transparent;
+  overflow: visible;
+  cursor: pointer;
+}
+.monaco-editor .mte-diff-removed::before {
+  content: '';
+  position: absolute;
+  left: 1px;
+  top: -4px;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 4px 0 4px 6px;
+  border-color: transparent transparent transparent #cf222e; /* 赤 */
+  pointer-events: none;          /* 親要素にクリックを伝える */
+}
+
+/* ダークテーマ調整 */
+.monaco-editor.vs-dark .mte-diff-added,
+.monaco-editor.mte-github-dark .mte-diff-added {
+  background-color: #3fb950;
+}
+.monaco-editor.vs-dark .mte-diff-modified,
+.monaco-editor.mte-github-dark .mte-diff-modified {
+  background-color: #58a6ff;
+}
+.monaco-editor.vs-dark .mte-diff-removed::before,
+.monaco-editor.mte-github-dark .mte-diff-removed::before {
+  border-left-color: #f85149;
+}
+
+/* ============================================================
+   編集差分マーカー — Peek パネル (クリックで変更前を表示)
+   ------------------------------------------------------------
+   gutter の色付き要素をクリックすると、その変更箇所の上に展開される
+   読み取り専用パネル。view zone の domNode として直接挿入される。
+   ============================================================ */
+.monaco-editor .mte-diff-peek {
+  background: #f6f8fa;
+  border: 1px solid #d0d7de;
+  border-left: 3px solid #cf222e; /* 変更前=削除色のアクセント */
+  border-radius: 3px;
+  /* 完全左寄せ。エディタの左端から右端まで使い、×ボタンが必ず画面内に入るようにする。 */
+  margin: 2px 0;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+.monaco-editor .mte-diff-peek-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 26px;
+  /* 右側は Monaco の縦スクロールバー(約14px)を避けるため余白を多めに。 */
+  padding: 0 24px 0 8px;
+  background: #eaeef2;
+  border-bottom: 1px solid #d0d7de;
+  font-size: 11px;
+  color: #57606a;
+  user-select: none;
+  /* スクロールバーより前面に出す(ヘッダ全体)。 */
+  position: relative;
+  z-index: 10;
+}
+.monaco-editor .mte-diff-peek-title {
+  font-weight: 500;
+}
+/* ヘッダ右側のアクション群(戻す・閉じる)。同じサイズ感で並べる。 */
+.monaco-editor .mte-diff-peek-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  position: relative;
+  z-index: 11;
+}
+.monaco-editor .mte-diff-peek-action {
+  background: none;
+  border: none;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+  color: #57606a;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.monaco-editor .mte-diff-peek-action:hover {
+  background: #d0d7de;
+  color: #1f2328;
+}
+.monaco-editor .mte-diff-peek-revert {
+  font-size: 16px; /* ↶ は小さめに見えるので少し大きく */
+}
+.monaco-editor .mte-diff-peek-close {
+  font-size: 18px; /* × は線が細いので少し大きく */
+}
+.monaco-editor .mte-diff-peek-body {
+  /* 左 padding はエディタの文字開始位置と揃える狙い。
+     Monaco の行装飾レーン+行番号幅で合計 60〜70px 前後。
+     折り返し有効なエディタでも違和感がないように 66px 固定にしておく。 */
+  padding: 4px 12px 4px 66px;
+  background: #ffeef0; /* 「削除側」を表す薄い赤背景 (GitHub diff の旧側色相当) */
+  color: #1f2328;
+  white-space: pre;
+  overflow-x: auto;
+}
+.monaco-editor .mte-diff-peek-line {
+  white-space: pre;
+}
+.monaco-editor .mte-diff-peek-empty {
+  color: #57606a;
+  font-style: italic;
+  background: transparent;
+}
+
+/* ダークテーマ */
+.monaco-editor.vs-dark .mte-diff-peek,
+.monaco-editor.mte-github-dark .mte-diff-peek {
+  background: #161b22;
+  border-color: #30363d;
+  border-left-color: #f85149;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+}
+.monaco-editor.vs-dark .mte-diff-peek-header,
+.monaco-editor.mte-github-dark .mte-diff-peek-header {
+  background: #21262d;
+  border-bottom-color: #30363d;
+  color: #8b949e;
+}
+.monaco-editor.vs-dark .mte-diff-peek-action,
+.monaco-editor.mte-github-dark .mte-diff-peek-action {
+  color: #8b949e;
+}
+.monaco-editor.vs-dark .mte-diff-peek-action:hover,
+.monaco-editor.mte-github-dark .mte-diff-peek-action:hover {
+  background: #30363d;
+  color: #e6edf3;
+}
+.monaco-editor.vs-dark .mte-diff-peek-body,
+.monaco-editor.mte-github-dark .mte-diff-peek-body {
+  background: #67060c33; /* 薄い赤 */
+  color: #e6edf3;
+}
+.monaco-editor.vs-dark .mte-diff-peek-empty,
+.monaco-editor.mte-github-dark .mte-diff-peek-empty {
+  color: #8b949e;
+}
+
+/* ============================================================
+   変更履歴ドロップダウン（モードバーの「変更履歴」ボタン配下）
+   ============================================================ */
+/* ボタンの親(モードバー or その親)は position: relative であってほしい。
+   既存の monaco-preview-mode-bar が relative になっていない場合に備え、
+   念のため指定する。 */
+.monaco-preview-mode-bar,
+.monaco-mode-group {
+  position: relative;
+}
+
+.monaco-history-menu {
+  position: absolute;
+  z-index: 50;
+  display: none;
+  min-width: 320px;
+  max-width: 560px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.15);
+  padding: 4px 0;
+  font-size: 12px;
+  color: #1f2328;
+}
+.monaco-history-menu-header {
+  padding: 6px 12px 4px;
+  font-size: 11px;
+  color: #57606a;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-bottom: 1px solid #eaeef2;
+  margin-bottom: 4px;
+}
+.monaco-history-menu-trunc {
+  padding: 2px 12px 6px;
+  font-size: 11px;
+  color: #8b949e;
+  font-style: italic;
+}
+.monaco-history-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 6px 12px;
+  font-family: inherit;
+  font-size: 12px;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.monaco-history-menu-item:hover,
+.monaco-history-menu-item:focus {
+  background: #ddeefd; /* 視認性が出る青系ハイライト */
+  color: #0a3069;
+  outline: none;
+}
+
+/* ダーク */
+.monaco-editor.vs-dark ~ .monaco-history-menu,
+.monaco-editor.mte-github-dark ~ .monaco-history-menu,
+body.theme-mte-github-dark .monaco-history-menu {
+  background: #161b22;
+  border-color: #30363d;
+  color: #e6edf3;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.45);
+}
+body.theme-mte-github-dark .monaco-history-menu-header {
+  color: #8b949e;
+  border-bottom-color: #21262d;
+}
+body.theme-mte-github-dark .monaco-history-menu-trunc {
+  color: #6e7681;
+}
+body.theme-mte-github-dark .monaco-history-menu-item:hover,
+body.theme-mte-github-dark .monaco-history-menu-item:focus {
+  background: #1f4068;
+  color: #cae6ff;
+}
+
+/* ============================================================
+   diff モード(変更履歴の左右並列表示)
+   ============================================================ */
+/* body.diff-mode の時は split-view レイアウトを流用しつつ、
+   プレビューペインは表示しない(diff コンテナがその場所を使う)。 */
+.monaco-editor-wrapper.diff-mode .monaco-preview-pane {
+  display: none;
+}
+.monaco-editor-wrapper.diff-mode .monaco-splitter {
+  display: none;
+}
+
+/* diff コンテナ自体。paneWrap の中で全幅を占める。 */
+.monaco-diff-container {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  background: #ffffff;
+}
+.monaco-diff-container .monaco-diff-pane {
+  flex: 1 1 50%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid #d0d7de;
+}
+.monaco-diff-container .monaco-diff-pane:first-child {
+  border-left: none;
+}
+.monaco-diff-container .monaco-diff-header {
+  flex: 0 0 auto;
+  height: 26px;
+  background: #eaeef2;
+  border-bottom: 1px solid #d0d7de;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #57606a;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+}
+.monaco-diff-container .monaco-diff-header-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.monaco-diff-container .monaco-diff-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+.monaco-diff-container .monaco-diff-close {
+  background: none;
+  border: none;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  line-height: 1;
+  color: #57606a;
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0;
+}
+.monaco-diff-container .monaco-diff-close:hover {
+  background: #d0d7de;
+  color: #1f2328;
+}
+
+/* 行装飾: 左=旧=赤背景、右=新=緑背景 */
+.monaco-editor .mte-diff-side-removed {
+  background-color: rgba(207, 34, 46, 0.12); /* 薄い赤 */
+}
+.monaco-editor .mte-diff-side-added {
+  background-color: rgba(46, 160, 67, 0.14); /* 薄い緑 */
+}
+/* 行頭の -/+ マーカー。glyphMargin に出す。 */
+.monaco-editor .mte-diff-glyph-minus,
+.monaco-editor .mte-diff-glyph-plus {
+  display: inline-block;
+  text-align: center;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: inherit;
+}
+.monaco-editor .mte-diff-glyph-minus::before {
+  content: '-';
+  color: #cf222e;
+}
+.monaco-editor .mte-diff-glyph-plus::before {
+  content: '+';
+  color: #1a7f37;
+}
+
+/* ダークテーマ */
+.monaco-editor.vs-dark .mte-diff-side-removed,
+.monaco-editor.mte-github-dark .mte-diff-side-removed {
+  background-color: rgba(248, 81, 73, 0.16);
+}
+.monaco-editor.vs-dark .mte-diff-side-added,
+.monaco-editor.mte-github-dark .mte-diff-side-added {
+  background-color: rgba(63, 185, 80, 0.16);
+}
+.monaco-editor.vs-dark .mte-diff-glyph-minus::before,
+.monaco-editor.mte-github-dark .mte-diff-glyph-minus::before {
+  color: #f85149;
+}
+.monaco-editor.vs-dark .mte-diff-glyph-plus::before,
+.monaco-editor.mte-github-dark .mte-diff-glyph-plus::before {
+  color: #3fb950;
+}
+
+body.theme-mte-github-dark .monaco-diff-container,
+.monaco-editor-wrapper.diff-mode.theme-mte-github-dark .monaco-diff-container {
+  background: #0d1117;
+}
+body.theme-mte-github-dark .monaco-diff-container .monaco-diff-header,
+.monaco-editor-wrapper.diff-mode.theme-mte-github-dark .monaco-diff-container .monaco-diff-header {
+  background: #161b22;
+  border-bottom-color: #30363d;
+  color: #8b949e;
+}
+body.theme-mte-github-dark .monaco-diff-container .monaco-diff-pane,
+.monaco-editor-wrapper.diff-mode.theme-mte-github-dark .monaco-diff-container .monaco-diff-pane {
+  border-left-color: #30363d;
+}
+body.theme-mte-github-dark .monaco-diff-container .monaco-diff-close,
+.monaco-editor-wrapper.diff-mode.theme-mte-github-dark .monaco-diff-container .monaco-diff-close {
+  color: #8b949e;
+}
+body.theme-mte-github-dark .monaco-diff-container .monaco-diff-close:hover,
+.monaco-editor-wrapper.diff-mode.theme-mte-github-dark .monaco-diff-container .monaco-diff-close:hover {
+  background: #30363d;
+  color: #e6edf3;
+}
+
+/* ============================================================
+   行末 Blame ヒント (カーソル行に薄く著者・日付・#注記を出す)
+   ------------------------------------------------------------
+   Monaco の Content Widget で描画される div。textContent に
+   ラベル文字列が入る。位置はカーソル行末。
+   line-height は JS 側で動的に設定する(エディタの実 lineHeight に
+   追従させ、フォントサイズ変更にも対応するため)。 */
+.monaco-editor .mte-blame-hint {
+  color: rgba(120, 120, 120, 0.55);
+  font-style: italic;
+  font-weight: normal;
+  font-size: 0.92em;
+  white-space: pre;
+  pointer-events: auto; /* ホバー検知のため auto。クリックは bubble させる */
+  user-select: none;
+  padding-left: 3em;
+  display: inline-block;
+  vertical-align: middle;
+  cursor: default;
+}
+.monaco-editor.vs-dark .mte-blame-hint,
+.monaco-editor.mte-github-dark .mte-blame-hint {
+  color: rgba(180, 180, 180, 0.55);
+}
+
+/* ============================================================
+   Blame ツールチップ (ホバー1秒で出すカード)
+   ------------------------------------------------------------
+   Monaco の Content Widget として描画されるため、position や
+   z-index はここでは指定しない(Monaco が overflow-widgets-root
+   配下に配置する。フルスクリーンでも追従する)。
+   ============================================================ */
+.mte-blame-tooltip {
+  background: #ffffff;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #1f2328;
+  min-width: 240px;
+  max-width: 420px;
+  line-height: 1.5;
+}
+.mte-blame-tooltip-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mte-blame-tooltip-author {
+  font-weight: 600;
+}
+.mte-blame-tooltip-date {
+  color: #57606a;
+  font-size: 11px;
+}
+.mte-blame-tooltip-note {
+  background: #eaeef2;
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 11px;
+  color: #1f2328;
+}
+.mte-blame-tooltip-summary {
+  margin-top: 6px;
+  display: flex;
+  gap: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+.mte-blame-tooltip-added {
+  color: #1a7f37;
+}
+.mte-blame-tooltip-removed {
+  color: #cf222e;
+}
+.mte-blame-tooltip-actions {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+.mte-blame-tooltip-jump {
+  background: #0969da;
+  color: #ffffff;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 12px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.mte-blame-tooltip-jump:hover {
+  background: #0860c4;
+}
+
+/* ダーク (mte-blame-tooltip--dark クラスが付いてるとき、または body のテーマで) */
+body.theme-mte-github-dark .mte-blame-tooltip,
+.mte-blame-tooltip.mte-blame-tooltip--dark {
+  background: #0d1117;
+  border-color: #30363d;
+  color: #e6edf3;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+}
+body.theme-mte-github-dark .mte-blame-tooltip-date,
+.mte-blame-tooltip.mte-blame-tooltip--dark .mte-blame-tooltip-date {
+  color: #8b949e;
+}
+body.theme-mte-github-dark .mte-blame-tooltip-note,
+.mte-blame-tooltip.mte-blame-tooltip--dark .mte-blame-tooltip-note {
+  background: #21262d;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+}
+body.theme-mte-github-dark .mte-blame-tooltip-added,
+.mte-blame-tooltip.mte-blame-tooltip--dark .mte-blame-tooltip-added {
+  color: #3fb950;
+}
+body.theme-mte-github-dark .mte-blame-tooltip-removed,
+.mte-blame-tooltip.mte-blame-tooltip--dark .mte-blame-tooltip-removed {
+  color: #f85149;
+}
+body.theme-mte-github-dark .mte-blame-tooltip-jump,
+.mte-blame-tooltip.mte-blame-tooltip--dark .mte-blame-tooltip-jump {
+  background: #1f6feb;
+  color: #ffffff;
+}
+body.theme-mte-github-dark .mte-blame-tooltip-jump:hover,
+.mte-blame-tooltip.mte-blame-tooltip--dark .mte-blame-tooltip-jump:hover {
+  background: #388bfd;
+}

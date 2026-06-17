@@ -1,11 +1,12 @@
 require_relative 'lib/redmine_monaco_editor/settings'
 require_relative 'lib/redmine_monaco_editor/my_controller_patch'
+require_relative 'lib/redmine_monaco_editor/description_history'
 
 Redmine::Plugin.register :redmine_monaco_editor do
   name        'Redmine Monaco Editor'
   author      'Suguru Ochiai'
   description 'Replaces the default Redmine text editor with Monaco Editor (VS Code engine) with Markdown syntax highlighting and side-by-side preview.'
-  version     '0.6.0'
+  version     '0.8.0'
   requires_redmine version_or_higher: '6.0.0'
 end
 
@@ -77,6 +78,12 @@ module RedmineMonacoEditor
       filelink_title filelink_manual_label filelink_manual_placeholder
       filelink_desc_label filelink_date_label
       ticket_not_found note_prefix
+      history_btn history_btn_tip history_dropdown_title
+      history_to_next history_to_current history_creation
+      history_empty history_truncated_note
+      rel_just_now rel_minutes_ago rel_hours_ago
+      rel_days_ago rel_months_ago rel_years_ago
+      lines_suffix no_desc_change show_diff
     ].freeze
 
     def view_layouts_base_html_head(context = {})
@@ -95,11 +102,28 @@ module RedmineMonacoEditor
       # ユーザーのMonaco設定（将来のtheme/font_size含む）をJSへ渡す。
       prefs = RedmineMonacoEditor::Settings.for_user(user)
 
+      # 説明欄の変更履歴を組み立てる(issueの編集/表示系画面のみ)。
+      # ツールバーの「変更履歴」ドロップダウンで使う。
+      # 失敗してもページ描画を止めないように例外を握りつぶす。
+      diff_data = nil
+      begin
+        diff_data = build_description_diff(context)
+      rescue => e
+        Rails.logger.error "[redmine_monaco_editor] description diff build failed: #{e.class}: #{e.message}"
+      end
+      diff_assign =
+        if diff_data
+          "window.MONACO_EDITOR_DIFF = #{diff_data.to_json};"
+        else
+          "window.MONACO_EDITOR_DIFF = null;"
+        end
+
       # JSへ辞書/設定を渡す（to_json で安全にシリアライズして埋め込む）。
       data_script =
         ("<script>" \
          "window.MONACO_EDITOR_I18N = #{dict.to_json};" \
          "window.MONACO_EDITOR_PREFS = #{prefs.to_json};" \
+         "#{diff_assign}" \
          "</script>").html_safe
 
       stylesheet_link_tag('monaco_editor', plugin: 'redmine_monaco_editor') +
@@ -109,6 +133,35 @@ module RedmineMonacoEditor
       %|<link rel="stylesheet" href="/monaco_assets/textgrid/styles/textgrid.css">|.html_safe +
       data_script +
       javascript_include_tag('monaco_editor', plugin: 'redmine_monaco_editor')
+    end
+
+    # ============================================================
+    # 説明欄の変更履歴(diff)データを組み立てる（issue編集/表示系のみ）
+    # ============================================================
+    # view_layouts_base_html_head は全ページ共通で呼ばれるため、
+    # 「issueの表示・新規・編集系の画面」に限定してデータを作る。
+    # それ以外（一覧、設定、wiki等）では nil を返し、何も埋め込まない。
+    #
+    # Redmine の編集ボタンは別ページに遷移せず issues#show 画面内で
+    # インライン編集フォームを展開するため、show も対象に含める。
+    def build_description_diff(context)
+      controller = context[:controller]
+      return nil if controller.nil?
+
+      params = controller.params rescue nil
+      return nil if params.nil?
+
+      ctrl = params[:controller].to_s
+      action = params[:action].to_s
+
+      target =
+        (ctrl == 'issues' && %w[show new create edit update].include?(action))
+      return nil unless target
+
+      issue = controller.instance_variable_get(:@issue)
+      return nil if issue.nil?
+
+      RedmineMonacoEditor::DescriptionHistory.build(issue)
     end
 
     # ============================================================

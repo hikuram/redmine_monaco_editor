@@ -1624,6 +1624,8 @@
   var ICON_PREVIEW = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 3C4.5 3 1.5 8 1.5 8s3 5 6.5 5 6.5-5 6.5-5-3-5-6.5-5z" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.2"/></svg>';
   var ICON_EDIT = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 12.5V14h1.5l7-7-1.5-1.5-7 7zM13.3 3.7a1 1 0 000-1.4l-1.6-1.6a1 1 0 00-1.4 0l-1.1 1.1 3 3 1.1-1.1z" fill="currentColor"/></svg>';
   var ICON_OUTLINE = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><line x1="2" y1="3.5" x2="13" y2="3.5" stroke="currentColor" stroke-width="1.2"/><line x1="5" y1="7" x2="13" y2="7" stroke="currentColor" stroke-width="1.2"/><line x1="5" y1="10.5" x2="13" y2="10.5" stroke="currentColor" stroke-width="1.2"/><line x1="8" y1="14" x2="13" y2="14" stroke="currentColor" stroke-width="1.2"/></svg>';
+  // 変更履歴アイコン: 時計回りの矢印 + 時計の針(VS Code の history アイコン風)
+  var ICON_HISTORY = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 2.5a5.5 5.5 0 1 1-5.196 7.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><polyline points="2,5 2,2 5,2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/><polyline points="8,5 8,8.5 10.5,10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
   // 全画面（展開）アイコン: 四隅に向かう矢印
   var ICON_FULLSCREEN = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   // 全画面解除（縮小）アイコン: 中央に集まる矢印
@@ -1818,12 +1820,23 @@
     btnOutline.innerHTML = ICON_OUTLINE;
     btnOutline.title = t('outline_tip', 'Toggle heading outline');
 
-    // 順序: 編集・分割・縦分割・プレビュー・アウトライン
+    // 変更履歴ボタン（アイコンのみ）。クリックでドロップダウン展開。
+    // 履歴データ(window.MONACO_EDITOR_DIFF.versions)が空の場合は非表示。
+    var btnHistory = document.createElement('button');
+    btnHistory.type = 'button';
+    btnHistory.className = 'monaco-preview-btn monaco-icon-only monaco-history-btn';
+    btnHistory.innerHTML = ICON_HISTORY;
+    btnHistory.title = t('history_btn_tip', 'Show diff between past versions');
+    btnHistory.setAttribute('aria-haspopup', 'true');
+    btnHistory.setAttribute('aria-expanded', 'false');
+
+    // 順序: 編集・分割・縦分割・プレビュー・アウトライン・変更履歴
     modeGroup.appendChild(btnEdit);
     modeGroup.appendChild(btnSplit);
     modeGroup.appendChild(btnSplitV);
     modeGroup.appendChild(btnPreview);
     modeGroup.appendChild(btnOutline);
+    modeGroup.appendChild(btnHistory);
 
     // モードと装飾の境界セパレータ
     var groupSep = document.createElement('span');
@@ -2190,9 +2203,35 @@
     setupScrollSync(editor, previewPane, body, textFormat);
 
     // ---- ボタンのstate管理 ----
-    function setMode(mode) {
-      // mode: 'edit' | 'split' | 'split-v' | 'preview'
-      body.classList.remove('split-view', 'split-vertical', 'preview-only');
+    // diff モード(変更履歴の差分表示)用の状態。setMode('diff', payload) で起動、
+    // payload = { fromText, toText, fromLabel, toLabel } を受ける。
+    // teardownDiff() で完全に元の状態へ戻す。
+    var diffState = null; // { container, leftEditor, rightEditor, closeBtn, ... }
+
+    function teardownDiff() {
+      if (!diffState) return;
+      try {
+        if (diffState.leftEditor) diffState.leftEditor.dispose();
+        if (diffState.rightEditor) diffState.rightEditor.dispose();
+      } catch (e) { /* ignore */ }
+      if (diffState.container && diffState.container.parentNode) {
+        diffState.container.parentNode.removeChild(diffState.container);
+      }
+      // diff モード起動中に仕込んだ ESC リスナーを解除
+      if (diffState.escHandler) {
+        document.removeEventListener('keydown', diffState.escHandler, true);
+      }
+      diffState = null;
+      // 元のエディタコンテナを再表示
+      editorContainer.style.display = '';
+    }
+
+    function setMode(mode, payload) {
+      // mode: 'edit' | 'split' | 'split-v' | 'preview' | 'diff'
+      // diff モードを終了するため、別モードに移る時は必ず teardown する
+      if (diffState && mode !== 'diff') teardownDiff();
+
+      body.classList.remove('split-view', 'split-vertical', 'preview-only', 'diff-mode');
       btnEdit.classList.remove('active');
       btnSplit.classList.remove('active');
       btnSplitV.classList.remove('active');
@@ -2203,12 +2242,10 @@
       previewPane.style.flex = '';
 
       if (mode === 'split') {
-        // 左右分割
         body.classList.add('split-view');
         btnSplit.classList.add('active');
         updatePreview();
       } else if (mode === 'split-v') {
-        // 上下分割（split-view + split-vertical）
         body.classList.add('split-view', 'split-vertical');
         btnSplitV.classList.add('active');
         updatePreview();
@@ -2216,25 +2253,230 @@
         body.classList.add('preview-only');
         btnPreview.classList.add('active');
         updatePreview();
+      } else if (mode === 'diff') {
+        // diff モード: 左右に過去版差分を並列表示(両方読み取り専用)。
+        // 既存の分割レイアウトを流用するため split-view も付ける。
+        body.classList.add('split-view', 'diff-mode');
+        // ペインの中身は専用 Monaco で埋めるため、元 editor は隠す。
+        editorContainer.style.display = 'none';
+        setupDiffMode(payload || {});
       } else {
         btnEdit.classList.add('active');
       }
 
-      // プレビューのみモードでは装飾ツールバーを無効化
-      var isPreviewOnly = (mode === 'preview');
+      // diff/プレビュー専用モードでは装飾ツールバーを無効化
+      var disableDeco = (mode === 'preview' || mode === 'diff');
       decoToolbar.querySelectorAll('button.monaco-deco-btn').forEach(function (btn) {
-        btn.disabled = isPreviewOnly;
+        btn.disabled = disableDeco;
       });
-      decoToolbar.classList.toggle('monaco-decoration-toolbar--disabled', isPreviewOnly);
+      decoToolbar.classList.toggle('monaco-decoration-toolbar--disabled', disableDeco);
 
       // Monacoのレイアウトをリフレッシュ
       setTimeout(function () { editor.layout(); }, 50);
+    }
+
+    // ----- diff モード本体 -----
+    // payload: { fromText, toText, fromLabel, toLabel }
+    //   fromText: 左側に出す変更前テキスト
+    //   toText:   右側に出す変更後テキスト
+    //   fromLabel / toLabel: ヘッダに出すラベル(任意)
+    function setupDiffMode(payload) {
+      var monacoInstance = window.monaco;
+      if (!monacoInstance) { return; }
+      teardownDiff();
+
+      var fromText = String(payload.fromText == null ? '' : payload.fromText);
+      var toText   = String(payload.toText   == null ? '' : payload.toText);
+      var fromLabel = payload.fromLabel || '';
+      var toLabel   = payload.toLabel   || '';
+
+      // 差分計算
+      var diff = gitDiffForSideBySide(fromText, toText);
+
+      // diff モードのコンテナを paneWrap 内に作成する(既存の分割レイアウトを利用)
+      var diffContainer = document.createElement('div');
+      diffContainer.className = 'monaco-diff-container';
+      diffContainer.style.display = 'flex';
+      diffContainer.style.flex = '1 1 auto';
+      diffContainer.style.minHeight = '0';
+      diffContainer.style.width = '100%';
+
+      // 左ペイン(変更前)のラッパー
+      var leftWrap = document.createElement('div');
+      leftWrap.className = 'monaco-diff-pane monaco-diff-left';
+      var leftHeader = document.createElement('div');
+      leftHeader.className = 'monaco-diff-header';
+      leftHeader.textContent = fromLabel;
+      var leftHost = document.createElement('div');
+      leftHost.className = 'monaco-diff-host';
+      leftWrap.appendChild(leftHeader);
+      leftWrap.appendChild(leftHost);
+
+      // 右ペイン(変更後)のラッパー
+      var rightWrap = document.createElement('div');
+      rightWrap.className = 'monaco-diff-pane monaco-diff-right';
+      var rightHeader = document.createElement('div');
+      rightHeader.className = 'monaco-diff-header';
+      var rightHeaderTitle = document.createElement('span');
+      rightHeaderTitle.className = 'monaco-diff-header-title';
+      rightHeaderTitle.textContent = toLabel;
+      rightHeader.appendChild(rightHeaderTitle);
+      // 閉じるボタン(右ヘッダの右端)
+      var closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'monaco-diff-close';
+      closeBtn.setAttribute('aria-label', 'close diff view');
+      closeBtn.setAttribute('title', 'close diff view');
+      closeBtn.textContent = '\u00D7';
+      closeBtn.addEventListener('mousedown', function (ev) {
+        ev.stopPropagation(); ev.preventDefault();
+        setMode('edit');
+      });
+      closeBtn.addEventListener('click', function (ev) {
+        ev.stopPropagation(); ev.preventDefault();
+      });
+      rightHeader.appendChild(closeBtn);
+      var rightHost = document.createElement('div');
+      rightHost.className = 'monaco-diff-host';
+      rightWrap.appendChild(rightHeader);
+      rightWrap.appendChild(rightHost);
+
+      diffContainer.appendChild(leftWrap);
+      diffContainer.appendChild(rightWrap);
+
+      // paneWrap に挿入(editorContainer の前あたり)
+      paneWrap.insertBefore(diffContainer, editorContainer);
+
+      // 両側に Monaco を生成
+      var commonOpts = {
+        value: '',
+        language: detectMonacoLanguage(textFormat),
+        readOnly: true,
+        domReadOnly: true,
+        renderLineHighlight: 'none',
+        scrollBeyondLastLine: false,
+        automaticLayout: true,
+        glyphMargin: true,
+        wordWrap: 'on',
+        minimap: { enabled: false },
+        theme: (editor.getRawOptions && editor.getRawOptions().theme) || 'vs',
+        fontSize: (editor.getOption && editor.getOption(monacoInstance.editor.EditorOption.fontSize)) || 13
+      };
+      var leftEditor = monacoInstance.editor.create(leftHost, Object.assign({}, commonOpts, { value: fromText }));
+      var rightEditor = monacoInstance.editor.create(rightHost, Object.assign({}, commonOpts, { value: toText }));
+
+      // 行装飾を適用
+      applyDiffSideDecorations(monacoInstance, leftEditor, 'left', diff);
+      applyDiffSideDecorations(monacoInstance, rightEditor, 'right', diff);
+
+      // 行対応スクロール同期
+      var syncingLR = false, syncingRL = false;
+      leftEditor.onDidScrollChange(function () {
+        if (syncingRL) return;
+        var top = leftEditor.getScrollTop();
+        // 左の上端行 → 対応する右の行 → 右の scrollTop
+        var leftLine = leftEditor.getTopForLineNumber
+          ? approxTopLineFromScroll(leftEditor, top, diff.leftTotal)
+          : 1;
+        var rightLine = diff.leftToRight[leftLine] || leftLine;
+        var rightTop = rightEditor.getTopForLineNumber(rightLine);
+        syncingLR = true;
+        rightEditor.setScrollTop(rightTop);
+        syncingLR = false;
+      });
+      rightEditor.onDidScrollChange(function () {
+        if (syncingLR) return;
+        var top = rightEditor.getScrollTop();
+        var rightLine = rightEditor.getTopForLineNumber
+          ? approxTopLineFromScroll(rightEditor, top, diff.rightTotal)
+          : 1;
+        var leftLine = diff.rightToLeft[rightLine] || rightLine;
+        var leftTop = leftEditor.getTopForLineNumber(leftLine);
+        syncingRL = true;
+        leftEditor.setScrollTop(leftTop);
+        syncingRL = false;
+      });
+
+      // ESC キーで diff モードを閉じる。
+      // capture phase (true) で登録するので、他のリスナー
+      // (例: フルスクリーン解除の Esc)より先に処理される。
+      // stopImmediatePropagation で他のリスナーへは伝播させない。
+      // → フルスクリーン中に diff を開いてた場合、最初のEscは
+      //   diff だけを閉じ、次のEscでフルスクリーン解除、という
+      //   階層的な挙動になる。
+      var escHandler = function (ev) {
+        if (ev.key !== 'Escape') return;
+        ev.stopImmediatePropagation();
+        ev.preventDefault();
+        setMode('edit');
+      };
+      document.addEventListener('keydown', escHandler, true);
+
+      diffState = {
+        container: diffContainer,
+        leftEditor: leftEditor,
+        rightEditor: rightEditor,
+        closeBtn: closeBtn,
+        escHandler: escHandler
+      };
+    }
+
+    // エディタの scrollTop からおおよその先頭行番号を推定。
+    // getTopForLineNumber を逆算する関数が無いので、行ごとの top を線形検索。
+    // 100行規模なら十分早い。
+    function approxTopLineFromScroll(ed, scrollTop, totalLines) {
+      var lo = 1, hi = Math.max(1, totalLines);
+      // 二分探索
+      while (lo < hi) {
+        var mid = (lo + hi) >> 1;
+        var t = ed.getTopForLineNumber(mid);
+        if (t < scrollTop) lo = mid + 1;
+        else hi = mid;
+      }
+      return lo;
+    }
+
+    // 言語ID解決(本体の detectFormat に揃える)
+    function detectMonacoLanguage(fmt) {
+      if (fmt === 'textile') return 'plaintext';
+      return 'markdown';
+    }
+
+    // 左右どちらかのエディタに、diff の装飾(背景色+行頭マーカー)を貼る。
+    // side: 'left' = 削除/旧側、'right' = 追加/新側
+    function applyDiffSideDecorations(mn, ed, side, diff) {
+      var set = (side === 'left') ? diff.leftDeco : diff.rightDeco;
+      var bgCls = (side === 'left') ? 'mte-diff-side-removed' : 'mte-diff-side-added';
+      var marginCls = (side === 'left') ? 'mte-diff-glyph-minus' : 'mte-diff-glyph-plus';
+      var model = ed.getModel();
+      if (!model) return;
+      var lineCount = model.getLineCount();
+      var decos = [];
+      set.forEach(function (ln) {
+        if (ln < 1 || ln > lineCount) return;
+        decos.push({
+          range: new mn.Range(ln, 1, ln, 1),
+          options: {
+            isWholeLine: true,
+            className: bgCls,
+            glyphMarginClassName: marginCls
+          }
+        });
+      });
+      if (typeof ed.createDecorationsCollection === 'function') {
+        ed.createDecorationsCollection(decos);
+      } else {
+        ed.deltaDecorations([], decos);
+      }
     }
 
     btnEdit.addEventListener('click', function () { setMode('edit'); });
     btnSplit.addEventListener('click', function () { setMode('split'); });
     btnSplitV.addEventListener('click', function () { setMode('split-v'); });
     btnPreview.addEventListener('click', function () { setMode('preview'); });
+
+    // 外部(setupHistoryDropdown 等)から diff モードへ切り替えるための公開フック。
+    editor.__mteOpenDiff = function (payload) { setMode('diff', payload); };
 
     // ウィンドウリサイズ時にレイアウト更新
     window.addEventListener('resize', function () { editor.layout(); });
@@ -2268,6 +2510,18 @@
     // setupDecoToolbar はこのキーで各ボタンにハンドラを結線する。
     // wrapper は表ビルダーのオーバーレイパネルの配置先として渡す。
     setupDecoToolbar(editor, decoBtns, textarea, wrapper);
+
+    // 編集差分マーカー: 開いた時点の本文を基準に、編集中の
+    // 追加(緑)・変更(青)・削除(赤三角)を gutter に出す。
+    setupChangeDiff(editor, textarea);
+
+    // 変更履歴ドロップダウン: 過去版同士の diff を選んで開く。
+    // データ(window.MONACO_EDITOR_DIFF)が無い/空ならボタン自体を隠す。
+    setupHistoryDropdown(btnHistory, editor, textarea);
+
+    // カーソル行に「著者・日付・#注記」をうっすら表示する Blame ヒント。
+    // 履歴データが無ければ何もしない。
+    setupBlameHint(editor, textarea);
   }
 
   // ============================================================
@@ -3547,6 +3801,1554 @@
     // ============================================================
     setupExistingTableGlyphs(editor, textarea, fmt, ensureApi);
   }
+
+
+  // ============================================================
+  // 変更履歴ドロップダウン（Phase 2: UI のみ、Phase 3 で diff モード起動を実装）
+  // ============================================================
+  // 押すとボタンの下に「過去版同士の差分」を選べるドロップダウンが出る。
+  // 各項目は #N → #M (次の版) / #N → 現在 のペア形式で並ぶ。
+  //
+  // データソース: window.MONACO_EDITOR_DIFF (Ruby側 view hook で埋め込み済み)。
+  // データが無い or 履歴ゼロのときはボタン自体を隠す。
+  //
+  // Phase 2 ではユーザーが項目を選んだら console.log するだけ。
+  // Phase 3 でここを「diff モード起動」に差し替える。
+  function setupHistoryDropdown(btn, editor, textarea) {
+    var DIFF = (typeof window !== 'undefined' && window.MONACO_EDITOR_DIFF) || null;
+
+    // データが無い・履歴が空のときはボタン自体を非表示
+    if (!DIFF || !DIFF.versions || DIFF.versions.length === 0) {
+      btn.style.display = 'none';
+      return;
+    }
+
+    var I = (typeof window !== 'undefined' && window.MONACO_EDITOR_I18N) || {};
+    function t(k, fallback) { return (I[k] != null && I[k] !== '') ? I[k] : fallback; }
+
+    // ドロップダウン要素を作る(初回のみ・以後 toggle)
+    var menu = null;
+    var menuOpen = false;
+
+    function buildMenu() {
+      var m = document.createElement('div');
+      m.className = 'monaco-history-menu';
+      m.setAttribute('role', 'menu');
+
+      var header = document.createElement('div');
+      header.className = 'monaco-history-menu-header';
+      header.textContent = t('history_dropdown_title', 'Select a diff to compare');
+      m.appendChild(header);
+
+      // truncated 注記
+      if (DIFF.truncated) {
+        var trunc = document.createElement('div');
+        trunc.className = 'monaco-history-menu-trunc';
+        trunc.textContent = t('history_truncated_note', 'Older entries are omitted');
+        m.appendChild(trunc);
+      }
+
+      // 各 version に対し、「#N → 次の版」と「#N → 現在」の2項目を並べる。
+      // 最後の version は「次の版」が無い(直後 = current)ので「→ 現在」のみ。
+      var versions = DIFF.versions;
+      for (var i = 0; i < versions.length; i++) {
+        var v = versions[i];
+        var labelLeft = formatVersionLabel(v);
+
+        if (i < versions.length - 1) {
+          var next = versions[i + 1];
+          appendItem(m,
+            labelLeft + '  →  ' + formatVersionLabel(next) + ' (' + t('history_to_next', 'next version') + ')',
+            { from: v, to: next });
+        }
+        appendItem(m,
+          labelLeft + '  →  ' + t('history_to_current', 'current'),
+          { from: v, to: null /* null = current */ });
+      }
+      return m;
+    }
+
+    function formatVersionLabel(v) {
+      if (!v) return t('history_to_current', 'current');
+      var idxLabel;
+      if (v.index === 0) {
+        idxLabel = t('history_creation', 'Creation');
+      } else {
+        idxLabel = '#' + v.index;
+      }
+      var author = v.author ? v.author : '';
+      var date = formatDate(v.created_on);
+      // "#N  著者  日付" のスペース区切り
+      return [idxLabel, author, date].filter(function (s) { return s && s.length > 0; }).join('  ');
+    }
+
+    function formatDate(iso) {
+      if (!iso) return '';
+      try {
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return '';
+        var y = d.getFullYear();
+        var mo = ('0' + (d.getMonth() + 1)).slice(-2);
+        var da = ('0' + d.getDate()).slice(-2);
+        var h = ('0' + d.getHours()).slice(-2);
+        var mi = ('0' + d.getMinutes()).slice(-2);
+        return y + '/' + mo + '/' + da + ' ' + h + ':' + mi;
+      } catch (e) { return ''; }
+    }
+
+    function appendItem(parent, label, payload) {
+      var item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'monaco-history-menu-item';
+      item.setAttribute('role', 'menuitem');
+      item.textContent = label;
+      item.addEventListener('mousedown', function (ev) {
+        ev.stopPropagation();
+        ev.preventDefault();
+      });
+      item.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        ev.preventDefault();
+        closeMenu();
+        // diff モードを開く。
+        //   payload.from: 選んだ "変更前" の版オブジェクト(versions[i])
+        //   payload.to:   "変更後"。null なら現在の保存版を使う。
+        var fromText = payload.from ? payload.from.text : '';
+        var toText, toLabel;
+        if (payload.to === null) {
+          toText = DIFF.current || '';
+          toLabel = formatCurrentLabel();
+        } else {
+          toText = payload.to.text || '';
+          toLabel = formatVersionLabel(payload.to);
+        }
+        var fromLabel = formatVersionLabel(payload.from);
+        if (typeof editor.__mteOpenDiff === 'function') {
+          editor.__mteOpenDiff({
+            fromText: fromText,
+            toText: toText,
+            fromLabel: fromLabel,
+            toLabel: toLabel
+          });
+        }
+      });
+      parent.appendChild(item);
+    }
+
+    function formatCurrentLabel() {
+      var meta = DIFF.current_meta || {};
+      var date = formatDate(meta.created_on);
+      var author = meta.author || '';
+      var idxLabel = t('history_to_current', 'current');
+      return [idxLabel, author, date].filter(function (s) { return s && s.length > 0; }).join('  ');
+    }
+
+    function openMenu() {
+      if (!menu) menu = buildMenu();
+      // ボタンの直下に配置するため、ボタンの親(モードバー)の末尾に挿入し、
+      // CSS で position: absolute で位置決めする(親が position: relative)。
+      var host = btn.parentNode;
+      if (!host) return;
+      if (!host.contains(menu)) host.appendChild(menu);
+
+      // ボタンの位置を基準にメニュー位置を決める
+      var btnRect = btn.getBoundingClientRect();
+      var hostRect = host.getBoundingClientRect();
+      menu.style.left = (btnRect.left - hostRect.left) + 'px';
+      menu.style.top  = (btnRect.bottom - hostRect.top + 4) + 'px';
+      menu.style.display = 'block';
+
+      menuOpen = true;
+      btn.setAttribute('aria-expanded', 'true');
+      btn.classList.add('active');
+
+      // 外側クリックで閉じる
+      setTimeout(function () {
+        document.addEventListener('mousedown', onDocMouseDown, true);
+        document.addEventListener('keydown', onDocKeyDown, true);
+      }, 0);
+    }
+
+    function closeMenu() {
+      if (!menuOpen) return;
+      menuOpen = false;
+      if (menu) menu.style.display = 'none';
+      btn.setAttribute('aria-expanded', 'false');
+      btn.classList.remove('active');
+      document.removeEventListener('mousedown', onDocMouseDown, true);
+      document.removeEventListener('keydown', onDocKeyDown, true);
+    }
+
+    function onDocMouseDown(ev) {
+      if (!menu) return closeMenu();
+      if (menu.contains(ev.target) || btn.contains(ev.target)) return;
+      closeMenu();
+    }
+    function onDocKeyDown(ev) {
+      if (ev.key === 'Escape') closeMenu();
+    }
+
+    btn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      ev.preventDefault();
+      if (menuOpen) closeMenu();
+      else openMenu();
+    });
+  }
+
+  // ============================================================
+  // 行末 Blame ヒント (VS Code の Git blame "うっすら表示" 相当)
+  // ============================================================
+  // カーソルがある行の末尾に「著者・相対日付・#注記番号」を薄く出す。
+  // 「行の作者」は VS Code Git blame と同じく「その行が最初に登場した
+  // 時点の著者」と定義する(=その行を最初に書いた人)。同じ文字列の行は
+  // 同じ行とみなす(シンプル)。
+  //
+  // データソース: window.MONACO_EDITOR_DIFF (versions[古い順] + current)。
+  // 履歴が無いときは何もしない。
+  //
+  // 描画: Monaco の inline decoration の `after` プロパティで行末に
+  // 擬似テキストを足す。専用 CSS クラスで薄い色 + イタリック。
+  //
+  // 編集中の追従: マップのキーは「行文字列」なので、編集で行内容が
+  // 変わったら自動的に別の(あるいは無い)エントリを引くだけ。
+  // 編集で新しく書いた行は map に無い → 何も出さない(VS Code 流)。
+  function setupBlameHint(editor, textarea) {
+    var monaco = window.monaco;
+    if (!monaco) return;
+    var DIFF = (typeof window !== 'undefined' && window.MONACO_EDITOR_DIFF) || null;
+    if (!DIFF || !DIFF.versions || DIFF.versions.length === 0) return;
+
+    // 行文字列 → 最古登場メタ情報 のマップを構築。
+    // 入力: versions[古い順] + current。古い順に流して、初出のときだけ
+    // セットするので、後から同じ文字列が出ても上書きされない(=最古優先)。
+    function buildOldestLineMap() {
+      var map = new Map();
+      var pushVersion = function (text, meta) {
+        if (!text || !meta) return;
+        var lines = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+        for (var i = 0; i < lines.length; i++) {
+          var ln = lines[i];
+          if (!map.has(ln)) map.set(ln, meta);
+        }
+      };
+      DIFF.versions.forEach(function (v) {
+        pushVersion(v.text, {
+          author: v.author || '',
+          created_on: v.created_on || null,
+          index: v.index,
+          journal_id: v.journal_id
+        });
+      });
+      // current は最後。current にしか無い行(=最新版で初登場)は
+      // current_meta(最終更新者)に紐づく。
+      if (DIFF.current_meta) {
+        pushVersion(DIFF.current, {
+          author: DIFF.current_meta.author || '',
+          created_on: DIFF.current_meta.created_on || null,
+          index: DIFF.current_meta.index,
+          journal_id: DIFF.current_meta.journal_id
+        });
+      }
+      return map;
+    }
+
+    var oldestMap = buildOldestLineMap();
+
+    // ----------------------------------------------------------
+    // Content Widget による描画
+    // ----------------------------------------------------------
+    // Monaco の公式 API である Content Widget を使う。装飾の after を
+    // 動的 CSS で書き換える方式に比べて、DOM が綺麗・複数エディタが
+    // 衝突しない・テキストエスケープが不要、という利点がある。
+    var widgetDom = document.createElement('div');
+    widgetDom.className = 'mte-blame-hint';
+    var widgetId = 'mte-blame-hint-' + Math.random().toString(36).slice(2, 10);
+    var widget = {
+      getId: function () { return widgetId; },
+      getDomNode: function () { return widgetDom; },
+      // 位置はカーソル行の末尾。preference は EXACT を第一候補にすることで
+      // 「指定行・指定列のすぐ後ろ」に出る(Monaco 内座標)。
+      // 行末より右に出すため、column は lineMaxColumn を使う(行内コンテンツの直後)。
+      _position: null,
+      getPosition: function () {
+        if (!this._position) return null;
+        return {
+          position: this._position,
+          preference: [
+            monaco.editor.ContentWidgetPositionPreference.EXACT
+          ]
+        };
+      }
+    };
+    var widgetAttached = false;
+
+    function attachWidget() {
+      if (widgetAttached) return;
+      editor.addContentWidget(widget);
+      widgetAttached = true;
+    }
+    function detachWidget() {
+      if (!widgetAttached) return;
+      editor.removeContentWidget(widget);
+      widgetAttached = false;
+    }
+    function clearWidget() {
+      widgetDom.textContent = '';
+      widget._position = null;
+      detachWidget();
+    }
+
+    function renderForCursor() {
+      var pos = editor.getPosition();
+      if (!pos) { clearWidget(); return; }
+      var model = editor.getModel();
+      if (!model) { clearWidget(); return; }
+      var ln = pos.lineNumber;
+      if (ln < 1 || ln > model.getLineCount()) { clearWidget(); return; }
+      var lineText = model.getLineContent(ln);
+      // 空行は出さない(うるさいので)
+      if (lineText === '') { clearWidget(); return; }
+      var meta = oldestMap.get(lineText);
+      if (!meta) { clearWidget(); return; }
+
+      var label = formatBlameLabel(meta);
+      if (!label) { clearWidget(); return; }
+
+      // エディタの実 lineHeight に合わせて widget の line-height を動的に
+      // セットする。フォントサイズ変更にも追従する。
+      // Content Widget は行下端基準で配置されるため、行高に合わせて中央
+      // 寄せにすることで「カーソル行の中央」に文字が来る。
+      var lh = editor.getOption(monaco.editor.EditorOption.lineHeight) || 19;
+      widgetDom.style.lineHeight = lh + 'px';
+      widgetDom.style.height = lh + 'px';
+
+      // Content Widget にラベルを書いてカーソル行の末尾に表示
+      widgetDom.textContent = label;
+      widget._position = { lineNumber: ln, column: model.getLineMaxColumn(ln) };
+      attachWidget();
+      // 既に attach 済みでも位置情報を反映するため layoutContentWidget を呼ぶ
+      editor.layoutContentWidget(widget);
+    }
+
+    function formatBlameLabel(meta) {
+      var parts = [];
+      if (meta.author) parts.push(meta.author);
+      var rel = formatRelative(meta.created_on);
+      if (rel) parts.push(rel);
+      if (meta.index != null) {
+        if (meta.index === 0) {
+          parts.push(blameT('history_creation', 'Creation'));
+        } else {
+          parts.push('#' + meta.index);
+        }
+      }
+      return parts.join(' \u00B7 '); // ' ・ '
+    }
+
+    function blameT(k, fallback) {
+      var I = (typeof window !== 'undefined' && window.MONACO_EDITOR_I18N) || {};
+      return (I[k] != null && I[k] !== '') ? I[k] : fallback;
+    }
+
+    function formatRelative(iso) {
+      if (!iso) return '';
+      var d;
+      try { d = new Date(iso); } catch (e) { return ''; }
+      if (!d || isNaN(d.getTime())) return '';
+      var now = Date.now();
+      var diffSec = Math.max(0, Math.floor((now - d.getTime()) / 1000));
+      if (diffSec < 60)   return blameT('rel_just_now', 'just now');
+      var diffMin = Math.floor(diffSec / 60);
+      if (diffMin < 60)   return diffMin + ' ' + blameT('rel_minutes_ago', 'minutes ago');
+      var diffHour = Math.floor(diffMin / 60);
+      if (diffHour < 24)  return diffHour + ' ' + blameT('rel_hours_ago', 'hours ago');
+      var diffDay = Math.floor(diffHour / 24);
+      if (diffDay < 30)   return diffDay + ' ' + blameT('rel_days_ago', 'days ago');
+      var diffMonth = Math.floor(diffDay / 30);
+      if (diffMonth < 12) return diffMonth + ' ' + blameT('rel_months_ago', 'months ago');
+      var diffYear = Math.floor(diffMonth / 12);
+      return diffYear + ' ' + blameT('rel_years_ago', 'years ago');
+    }
+
+    // ----------------------------------------------------------
+    // ホバーツールチップ
+    // ----------------------------------------------------------
+    // widgetDom にマウスホバー1秒以上で、もう少し詳しいカードを表示。
+    //   - 著者名
+    //   - 相対日付 + 絶対日付
+    //   - #注記番号
+    //   - その journal で +N行 / -M行 の要約
+    //   - 「差分を見る」ボタン (クリックで diff モードへ)
+    var tooltipDom = document.createElement('div');
+    tooltipDom.className = 'mte-blame-tooltip';
+    tooltipDom.style.display = 'none';
+
+    // Blame ツールチップは Monaco の Content Widget として登録する。
+    // body 直下に置くとネイティブ Fullscreen API の制約で全画面中に
+    // 描画されない問題があるため、Monaco の overflow-widgets-root を
+    // 経由して描画させる(@メンション や #xxx と同じ作法)。
+    // fixedOverflowWidgets: true により wrapper 内に出るので、
+    // フルスクリーン中も追従して表示される。
+    var tooltipWidgetId = 'mte-blame-tooltip-' + Math.random().toString(36).slice(2, 10);
+    var tooltipWidget = {
+      getId: function () { return tooltipWidgetId; },
+      getDomNode: function () { return tooltipDom; },
+      _position: null,
+      getPosition: function () {
+        if (!this._position) return null;
+        return {
+          position: this._position,
+          preference: [
+            monaco.editor.ContentWidgetPositionPreference.ABOVE,
+            monaco.editor.ContentWidgetPositionPreference.BELOW
+          ]
+        };
+      },
+      // 補完候補等と一緒に overflow-widgets-root へ出すよう要求
+      allowEditorOverflow: true
+    };
+    var tooltipAttached = false;
+    function attachTooltip() {
+      if (tooltipAttached) return;
+      editor.addContentWidget(tooltipWidget);
+      tooltipAttached = true;
+    }
+    function detachTooltip() {
+      if (!tooltipAttached) return;
+      editor.removeContentWidget(tooltipWidget);
+      tooltipAttached = false;
+    }
+
+    widgetDom.style.pointerEvents = 'auto';
+
+    var hoverTimer = null;
+    var hideTimer = null;
+    var currentMetaForTip = null; // ツールチップ表示中のメタ情報
+
+    function scheduleShow(meta) {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      if (hoverTimer) clearTimeout(hoverTimer);
+      hoverTimer = setTimeout(function () {
+        showTooltip(meta);
+      }, 1000);
+    }
+    function cancelShow() {
+      if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+    }
+    function scheduleHide() {
+      if (hideTimer) clearTimeout(hideTimer);
+      hideTimer = setTimeout(function () {
+        tooltipDom.style.display = 'none';
+        detachTooltip();
+        currentMetaForTip = null;
+      }, 200);
+    }
+    function cancelHide() {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    }
+
+    function showTooltip(meta) {
+      // 差分要約が無い or 変更行数 0 のときはツールチップ自体を出さない。
+      // (creation / 説明欄を触ってない journal の場合がこれに該当)
+      var summary = computeJournalSummary(meta);
+      if (!summary || (summary.added === 0 && summary.removed === 0)) {
+        return;
+      }
+
+      currentMetaForTip = meta;
+      tooltipDom.innerHTML = ''; // クリア(textContent で safe な要素を組み立てる)
+
+      // 1段目: 著者名 + 相対日付 + 絶対日付 + #注記番号
+      var headerRow = document.createElement('div');
+      headerRow.className = 'mte-blame-tooltip-header';
+
+      var authorSpan = document.createElement('span');
+      authorSpan.className = 'mte-blame-tooltip-author';
+      authorSpan.textContent = meta.author || '';
+      headerRow.appendChild(authorSpan);
+
+      var dateSpan = document.createElement('span');
+      dateSpan.className = 'mte-blame-tooltip-date';
+      var rel = formatRelative(meta.created_on);
+      var abs = formatAbsolute(meta.created_on);
+      dateSpan.textContent = (rel ? rel : '') + (abs ? '  (' + abs + ')' : '');
+      headerRow.appendChild(dateSpan);
+
+      var noteSpan = document.createElement('span');
+      noteSpan.className = 'mte-blame-tooltip-note';
+      noteSpan.textContent = (meta.index === 0)
+        ? blameT('history_creation', 'Creation')
+        : ('#' + meta.index);
+      headerRow.appendChild(noteSpan);
+
+      tooltipDom.appendChild(headerRow);
+
+      // 2段目: その journal の説明欄変更要約 (+N行 / -M行)
+      var sumRow = document.createElement('div');
+      sumRow.className = 'mte-blame-tooltip-summary';
+      if (summary.added > 0) {
+        var addSpan = document.createElement('span');
+        addSpan.className = 'mte-blame-tooltip-added';
+        addSpan.textContent = '+' + summary.added + blameT('lines_suffix', '');
+        sumRow.appendChild(addSpan);
+      }
+      if (summary.removed > 0) {
+        var delSpan = document.createElement('span');
+        delSpan.className = 'mte-blame-tooltip-removed';
+        delSpan.textContent = '-' + summary.removed + blameT('lines_suffix', '');
+        sumRow.appendChild(delSpan);
+      }
+      tooltipDom.appendChild(sumRow);
+
+      // 3段目: diff モードへジャンプするボタン
+      var actionRow = document.createElement('div');
+      actionRow.className = 'mte-blame-tooltip-actions';
+      var jumpBtn = document.createElement('button');
+      jumpBtn.type = 'button';
+      jumpBtn.className = 'mte-blame-tooltip-jump';
+      jumpBtn.textContent = blameT('show_diff', 'Show diff');
+      jumpBtn.addEventListener('mousedown', function (ev) {
+        ev.stopPropagation(); ev.preventDefault();
+        jumpToDiff(meta);
+      });
+      jumpBtn.addEventListener('click', function (ev) {
+        ev.stopPropagation(); ev.preventDefault();
+      });
+      actionRow.appendChild(jumpBtn);
+      tooltipDom.appendChild(actionRow);
+
+      // 位置決め: Monaco Content Widget としてカーソル行末に attach
+      // (allowEditorOverflow=true で overflow-widgets-root 配下に出る
+      //  ためフルスクリーンでも追従して描画される)
+      // テーマクラスを動的付与: tooltipDom は overflow-widgets-root 配下に
+      // 出るため、Monaco の vs-dark クラスが効くが、念のため自前クラスも付ける。
+      var themeOpt = '';
+      try {
+        themeOpt = (editor.getRawOptions && editor.getRawOptions().theme) || '';
+      } catch (e) {}
+      tooltipDom.classList.remove('mte-blame-tooltip--dark');
+      if (/dark|night/i.test(themeOpt)) {
+        tooltipDom.classList.add('mte-blame-tooltip--dark');
+      }
+
+      // カーソル行の末尾を基準位置にする
+      var pos = editor.getPosition();
+      if (!pos) return;
+      var model2 = editor.getModel();
+      if (!model2) return;
+      tooltipWidget._position = {
+        lineNumber: pos.lineNumber,
+        column: model2.getLineMaxColumn(pos.lineNumber)
+      };
+      tooltipDom.style.display = 'block';
+      attachTooltip();
+      // 位置の再計算をリクエスト
+      editor.layoutContentWidget(tooltipWidget);
+    }
+
+    function formatAbsolute(iso) {
+      if (!iso) return '';
+      try {
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return '';
+        var y = d.getFullYear();
+        var mo = ('0' + (d.getMonth() + 1)).slice(-2);
+        var da = ('0' + d.getDate()).slice(-2);
+        var h = ('0' + d.getHours()).slice(-2);
+        var mi = ('0' + d.getMinutes()).slice(-2);
+        return y + '/' + mo + '/' + da + ' ' + h + ':' + mi;
+      } catch (e) { return ''; }
+    }
+
+    // その journal で説明欄に対して +N行 / -M行 の変更があったかを
+    // 自前 git Myers で計算する。journal_id を versions 配列の位置に
+    // マッピングして「直前の text → その時点の text」を diff する。
+    function computeJournalSummary(meta) {
+      if (!DIFF || !DIFF.versions) return null;
+      var versions = DIFF.versions;
+      // meta.journal_id が版番号を引くキー。current の場合は meta.journal_id
+      // が current_meta の journal_id と一致する。
+      var foundIdx = -1;
+      var isCurrent = false;
+      if (DIFF.current_meta && DIFF.current_meta.journal_id != null
+        && meta.journal_id === DIFF.current_meta.journal_id) {
+        isCurrent = true;
+      } else {
+        for (var i = 0; i < versions.length; i++) {
+          if (versions[i].journal_id === meta.journal_id) { foundIdx = i; break; }
+        }
+        // creation(index=0) の場合は journal_id=null。要約は出せない(creation
+        // の手前が無いため)。
+        if (foundIdx === -1 && meta.journal_id == null && meta.index === 0) {
+          return null;
+        }
+      }
+
+      var beforeText, afterText;
+      if (isCurrent) {
+        if (versions.length === 0) return null;
+        beforeText = versions[versions.length - 1].text || '';
+        afterText = DIFF.current || '';
+      } else {
+        if (foundIdx === -1) return null;
+        // versions[foundIdx] = この journal で作られた版自体
+        // ただし「この journal でどう変わったか」を見たいので、
+        // 「直前の版」と「この版」を diff する。
+        var prevText;
+        if (foundIdx === 0) {
+          // 最古版 = creation。直前はその前(creation 直前)が無いので、
+          // creation の text の old_value は無い。要約は省略。
+          return null;
+        }
+        prevText = versions[foundIdx - 1].text || '';
+        beforeText = prevText;
+        afterText = versions[foundIdx].text || '';
+      }
+
+      // 自前 Myers + compact で diff、+N/-M を集計
+      try {
+        var a = gitDiffNormLines(beforeText);
+        var b = gitDiffNormLines(afterText);
+        var ops = gitMyersDiff(a, b);
+        ops = gitChangeCompact(a, b, ops);
+        var added = 0, removed = 0;
+        ops.forEach(function (op) {
+          if (op.op === 'ins') added++;
+          else if (op.op === 'del') removed++;
+        });
+        return { added: added, removed: removed, beforeText: beforeText, afterText: afterText };
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function jumpToDiff(meta) {
+      var summary = computeJournalSummary(meta);
+      if (!summary) return;
+      if (typeof editor.__mteOpenDiff === 'function') {
+        var fromLabel, toLabel;
+        if (DIFF.current_meta && meta.journal_id === DIFF.current_meta.journal_id) {
+          // current。手前 = versions の最後
+          if (DIFF.versions.length === 0) return;
+          var prevV = DIFF.versions[DIFF.versions.length - 1];
+          fromLabel = formatVersionLabelShort(prevV);
+          toLabel = blameT('history_to_current', 'current');
+        } else {
+          var foundIdx = -1;
+          for (var i = 0; i < DIFF.versions.length; i++) {
+            if (DIFF.versions[i].journal_id === meta.journal_id) { foundIdx = i; break; }
+          }
+          if (foundIdx <= 0) return;
+          fromLabel = formatVersionLabelShort(DIFF.versions[foundIdx - 1]);
+          toLabel = formatVersionLabelShort(DIFF.versions[foundIdx]);
+        }
+        editor.__mteOpenDiff({
+          fromText: summary.beforeText,
+          toText: summary.afterText,
+          fromLabel: fromLabel,
+          toLabel: toLabel
+        });
+      }
+      // ツールチップは閉じる
+      tooltipDom.style.display = 'none';
+      detachTooltip();
+      currentMetaForTip = null;
+    }
+
+    function formatVersionLabelShort(v) {
+      if (!v) return '';
+      var idx = (v.index === 0) ? blameT('history_creation', 'Creation') : ('#' + v.index);
+      var parts = [idx];
+      if (v.author) parts.push(v.author);
+      var rel = formatRelative(v.created_on);
+      if (rel) parts.push(rel);
+      return parts.join(' \u00B7 ');
+    }
+
+    // widget へのホバー/離脱
+    widgetDom.addEventListener('mouseenter', function () {
+      cancelHide();
+      // 現在の meta は renderForCursor で最後にセットされたもの
+      // ここで取り直す必要がある→ lastMeta を保持しておく
+      if (lastRenderedMeta) scheduleShow(lastRenderedMeta);
+    });
+    widgetDom.addEventListener('mouseleave', function () {
+      cancelShow();
+      scheduleHide();
+    });
+    // ツールチップ自体へのホバー/離脱(入ってる間は開いたまま)
+    tooltipDom.addEventListener('mouseenter', function () {
+      cancelHide();
+    });
+    tooltipDom.addEventListener('mouseleave', function () {
+      scheduleHide();
+    });
+
+    // renderForCursor が最後に使った meta を保持
+    var lastRenderedMeta = null;
+    var origRender = renderForCursor;
+    renderForCursor = function () {
+      origRender();
+      // 描画完了後の meta を取り直す: pos の行が変わってるかも
+      var pos = editor.getPosition();
+      if (!pos) { lastRenderedMeta = null; return; }
+      var model = editor.getModel();
+      if (!model) { lastRenderedMeta = null; return; }
+      var ln = pos.lineNumber;
+      if (ln < 1 || ln > model.getLineCount()) { lastRenderedMeta = null; return; }
+      var lineText = model.getLineContent(ln);
+      lastRenderedMeta = lineText ? (oldestMap.get(lineText) || null) : null;
+      // カーソル行が変わったらツールチップは閉じる(別行の情報を出してしまうため)
+      if (currentMetaForTip && lastRenderedMeta !== currentMetaForTip) {
+        tooltipDom.style.display = 'none';
+        detachTooltip();
+        currentMetaForTip = null;
+        cancelShow();
+      }
+    };
+
+    editor.onDidChangeCursorPosition(function () { renderForCursor(); });
+    editor.onDidChangeModelContent(function () { renderForCursor(); });
+    renderForCursor();
+  }
+
+  // ============================================================
+  // 編集差分マーカー（gutter）
+  // ============================================================
+  // 要件:
+  //   - エディタを開いた瞬間の本文(textarea.value)を「基準(base)」として固定保持。
+  //   - 編集するたびに base ↔ 現在値 を diff し、行装飾マージン(gutter)に出す:
+  //       追加行   → 緑の縦線
+  //       変更行   → 青の縦線
+  //       削除位置 → 赤い三角（行間）
+  //   - 開いた直後は base===現在なので何も出ない。
+  //   - サーバ側のデータは一切使わない（フロントだけで完結）。
+  //
+  // diff エンジン:
+  //   自前の git 互換 Myers 実装(gitMyersDiff)。VS Code の Git gutter は内部で
+  //   git diff の結果を見ているため、Monaco 内蔵の diff エンジン（linesDiff-
+  //   Computers）ではなく git と同じ Myers アルゴリズムで計算する。
+  //   後段でハンクを gutter 表示用 {lineClass, deletedAt} に変換する。
+  function setupChangeDiff(editor, textarea) {
+    var monaco = window.monaco;
+    if (!monaco) { return; }
+
+    var model = editor.getModel();
+    if (!model) { return; }
+
+    // 基準テキスト = 開いた瞬間の本文（編集前）。以後は固定。
+    var baseText = (textarea && typeof textarea.value === 'string')
+      ? textarea.value
+      : editor.getValue();
+
+    // 装飾コレクション（既存表glyphと同じ作法で両対応）。
+    var collection = null;
+    var decoIds = [];
+    if (typeof editor.createDecorationsCollection === 'function') {
+      collection = editor.createDecorationsCollection([]);
+    }
+    function setDecos(decos) {
+      if (collection) { collection.set(decos); }
+      else { decoIds = editor.deltaDecorations(decoIds, decos); }
+    }
+
+    // 直近の diff 結果(ハンク含む)を保持。クリック時に該当ハンクを特定するため。
+    var currentHunks = [];
+    var currentLineClass = {};
+    var currentDeletedAt = new Set();
+
+    function render() {
+      var curr = editor.getValue();
+      var lineCount = model.getLineCount();
+      var d = gitDiffForGutter(baseText, curr);
+      currentHunks = d.hunks || [];
+      currentLineClass = d.lineClass;
+      currentDeletedAt = d.deletedAt;
+
+      var decos = [];
+
+      Object.keys(d.lineClass).forEach(function (lnStr) {
+        var ln = parseInt(lnStr, 10);
+        if (ln < 1 || ln > lineCount) { return; }
+        var kind = d.lineClass[lnStr];
+        var cls = (kind === 'added') ? 'mte-diff-added'
+                : (kind === 'modified') ? 'mte-diff-modified'
+                : null;
+        if (!cls) { return; }
+        decos.push({
+          range: new monaco.Range(ln, 1, ln, 1),
+          options: { isWholeLine: true, linesDecorationsClassName: cls }
+        });
+      });
+
+      d.deletedAt.forEach(function (ln) {
+        if (ln < 1 || ln > lineCount) { return; }
+        decos.push({
+          range: new monaco.Range(ln, 1, ln, 1),
+          options: { linesDecorationsClassName: 'mte-diff-removed' }
+        });
+      });
+
+      setDecos(decos);
+
+      // 本文が編集で変わったときは、開いてるパネルを閉じる（中身が古くなるため）
+      closePeekPanel();
+    }
+
+    // 開いた直後は base===現在なので無色。以後は編集追従。
+    render();
+    editor.onDidChangeModelContent(function () { render(); });
+
+    // ------------------------------------------------------------
+    // gutter クリックで該当ハンクの「変更前」をパネル展開する (Peek 風UI)
+    // ------------------------------------------------------------
+    // VS Code の dirty diff gutter のように、色のついた装飾(緑/青の縦線、
+    // 赤三角)をクリックすると、その変更箇所の上に「変更前テキスト」を
+    // 並べた読み取り専用パネルが開く。同時に開けるパネルは1つだけ。
+    //
+    // 実装:
+    //   - view zone でエディタ行間にスペースを確保
+    //   - overlay widget でそのスペースに HTML を乗せる
+    //     (view zone 単体だと内容を埋められないので overlay と組み合わせる)
+    //   - クリック検知は editor.onMouseDown を使い、
+    //     target.type === GUTTER_LINE_DECORATIONS かつ要素が mte-diff-* かで判定
+    var peekState = null; // { viewZoneId, overlayWidget, line }
+
+    function findHunkAtLine(lineNumber) {
+      // 行番号 ln を含むハンクを返す。
+      //   1) 通常ハンク: newStart <= ln <= newStart+newCount-1 に含まれる
+      //   2) 純削除ハンク(newCount=0): 「削除位置」が lineClass 上 deletedAt に
+      //      addされた行(=h.newStart の補正後)。赤三角の行クリックを拾う。
+      for (var i = 0; i < currentHunks.length; i++) {
+        var h = currentHunks[i];
+        if (h.newCount > 0) {
+          if (lineNumber >= h.newStart && lineNumber < h.newStart + h.newCount) {
+            return h;
+          }
+        } else {
+          // 純削除: deletedAt は h.newStart (補正後) を加える
+          // 補正は gitHunksToLineClass と揃える(1..newTotal)
+          var ln = h.newStart;
+          if (ln < 1) ln = 1;
+          if (lineNumber === ln) return h;
+        }
+      }
+      return null;
+    }
+
+    editor.onMouseDown(function (e) {
+      if (!e.target) return;
+      // 行装飾レーン(linesDecorationsClassName で出した要素)のクリックを判定
+      if (e.target.type !== monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS) return;
+      var dom = e.target.element;
+      if (!dom || !dom.classList) return;
+      var isDiff = dom.classList.contains('mte-diff-added') ||
+                   dom.classList.contains('mte-diff-modified') ||
+                   dom.classList.contains('mte-diff-removed');
+      if (!isDiff) return;
+      var pos = e.target.position;
+      if (!pos) return;
+      var h = findHunkAtLine(pos.lineNumber);
+      if (!h) return;
+      openPeekPanel(h);
+    });
+
+    // パネルを開く。同時に1個だけ。
+    function openPeekPanel(hunk) {
+      closePeekPanel();
+      // 変更前テキスト(全行)。純削除ハンクでも dels は持ってる。
+      var beforeLines = (hunk.dels || []).map(function (d) { return d.line; });
+      // パネルを出す行: 通常ハンクなら newStart の直前(=その行の上に展開)、
+      // 純削除ハンクなら「削除位置」の上に展開する。
+      var anchorLine = hunk.newStart;
+      // newStart は1始まり。view zone の afterLineNumber は0以上、その行の「下」に
+      // 出る。なので afterLineNumber = anchorLine - 1 にすれば、anchorLine の上に
+      // パネルが出る(行の手前に挿入される)。
+      var afterLn = anchorLine - 1;
+      if (afterLn < 0) afterLn = 0;
+
+      // パネル DOM を組み立てる
+      var panel = document.createElement('div');
+      panel.className = 'mte-diff-peek';
+
+      var header = document.createElement('div');
+      header.className = 'mte-diff-peek-header';
+      var title = document.createElement('span');
+      title.className = 'mte-diff-peek-title';
+      if (beforeLines.length === 0) {
+        // 純追加: 変更前は無い
+        title.textContent = '変更前: (なし)';
+      } else if (beforeLines.length === 1) {
+        title.textContent = '変更前 (1行)';
+      } else {
+        title.textContent = '変更前 (' + beforeLines.length + '行)';
+      }
+      // ヘッダ右側のアクションボタン群
+      var actions = document.createElement('div');
+      actions.className = 'mte-diff-peek-actions';
+
+      // 戻すボタン: ハンクの変更を1個だけ取り消す (新側を旧側に戻す)。
+      // 純追加(beforeLines.length === 0) では「戻す」の意味が「追加分を消す」
+      // になり、それも対応する。
+      var revertBtn = document.createElement('button');
+      revertBtn.type = 'button';
+      revertBtn.className = 'mte-diff-peek-action mte-diff-peek-revert';
+      revertBtn.setAttribute('aria-label', '元に戻す');
+      revertBtn.setAttribute('title', '元に戻す');
+      revertBtn.textContent = '\u21B6'; // ↶
+      revertBtn.addEventListener('mousedown', function (ev) {
+        ev.stopPropagation();
+        ev.preventDefault();
+        revertHunk(hunk);
+      });
+      revertBtn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        ev.preventDefault();
+      });
+
+      var closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'mte-diff-peek-action mte-diff-peek-close';
+      closeBtn.setAttribute('aria-label', '閉じる');
+      closeBtn.setAttribute('title', '閉じる');
+      closeBtn.textContent = '\u00D7'; // ×
+      // Monaco の view zone 内に置いた要素は、エディタ本体の onMouseDown に
+      // クリックを奪われることがある(Monaco がエディタ領域内のイベントを掴む)。
+      // mousedown 段階で stopPropagation + preventDefault し、その場で閉じる。
+      closeBtn.addEventListener('mousedown', function (ev) {
+        ev.stopPropagation();
+        ev.preventDefault();
+        closePeekPanel();
+      });
+      closeBtn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        ev.preventDefault();
+        closePeekPanel();
+      });
+
+      actions.appendChild(revertBtn);
+      actions.appendChild(closeBtn);
+      header.appendChild(title);
+      header.appendChild(actions);
+
+      var body = document.createElement('div');
+      body.className = 'mte-diff-peek-body';
+      if (beforeLines.length === 0) {
+        var empty = document.createElement('div');
+        empty.className = 'mte-diff-peek-empty';
+        empty.textContent = 'この箇所は新規追加です（変更前のテキストはありません）';
+        body.appendChild(empty);
+      } else {
+        beforeLines.forEach(function (line) {
+          var row = document.createElement('div');
+          row.className = 'mte-diff-peek-line';
+          // 空行も表示に出すため、空でも高さを確保する
+          row.textContent = line === '' ? '\u00A0' : line;
+          body.appendChild(row);
+        });
+      }
+      panel.appendChild(header);
+      panel.appendChild(body);
+
+      // 高さ計算: 行高 × (内容行 + ヘッダ分)。最低1行ぶん。
+      // 内容行は beforeLines.length (純追加なら 1=メッセージ行)
+      var lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight) || 19;
+      var contentLines = beforeLines.length === 0 ? 1 : beforeLines.length;
+      var headerPx = 28;
+      var paddingPx = 8;
+      var panelHeightPx = headerPx + contentLines * lineHeight + paddingPx;
+
+      // view zone を追加してスペース確保。
+      // domNode に panel を直接入れるので、行間にそのままパネルが描画される
+      // (overlay widget は不要)。
+      var zoneId = null;
+      editor.changeViewZones(function (accessor) {
+        zoneId = accessor.addZone({
+          afterLineNumber: afterLn,
+          heightInPx: panelHeightPx,
+          domNode: panel
+        });
+      });
+
+      peekState = { viewZoneId: zoneId, line: anchorLine };
+    }
+
+    // ----------------------------------------------------------
+    // ハンク1つぶんの変更を元に戻す
+    // ----------------------------------------------------------
+    // 「変更後(新側)の行範囲」を「変更前(旧側)のテキスト」で置き換える。
+    // Monaco の executeEdits を使うことで Undo 履歴に1つの編集として記録され、
+    // Ctrl+Z で取り消せる。
+    //
+    // ケース分け:
+    //   通常ハンク(newCount > 0): エディタの newStart..newStart+newCount-1 を
+    //     旧テキスト(dels の line を改行で連結)で置換。
+    //   純削除ハンク(newCount === 0): newStart の「行の手前」に旧テキストを
+    //     挿入する。
+    //   純追加ハンク(oldCount === 0): エディタの newStart..newStart+newCount-1
+    //     を空に置換(行ごと消す)。
+    function revertHunk(hunk) {
+      if (!hunk) return;
+      var beforeLines = (hunk.dels || []).map(function (d) { return d.line; });
+      var lineCount = model.getLineCount();
+
+      var range, replacement;
+      if (hunk.newCount === 0) {
+        // 純削除: newStart の行の手前に挿入。
+        // 挿入テキストは「行を改行で繋いだ + 末尾改行」(挿入後にもう1行ぶん下がるため)。
+        var insertAtLine = hunk.newStart;
+        if (insertAtLine < 1) insertAtLine = 1;
+        // ファイル末尾を超える場合は最終行の末尾に挿入する
+        if (insertAtLine > lineCount) {
+          // ファイル末尾(最終行の末尾)に「改行 + 旧テキスト」を追加
+          var lastLine = lineCount;
+          var lastCol = model.getLineMaxColumn(lastLine);
+          range = new monaco.Range(lastLine, lastCol, lastLine, lastCol);
+          replacement = '\n' + beforeLines.join('\n');
+        } else {
+          // 行の手前(列1)に挿入。 旧テキスト + 改行 を入れる。
+          range = new monaco.Range(insertAtLine, 1, insertAtLine, 1);
+          replacement = beforeLines.join('\n') + '\n';
+        }
+      } else if (hunk.oldCount === 0) {
+        // 純追加: 新の newStart..newStart+newCount-1 行を丸ごと消す。
+        // 「行ごと消す」=「次の行頭まで含めて削除」する必要がある。
+        var firstLine = hunk.newStart;
+        var lastLine2 = hunk.newStart + hunk.newCount - 1;
+        if (firstLine < 1) firstLine = 1;
+        if (lastLine2 > lineCount) lastLine2 = lineCount;
+        if (lastLine2 < lineCount) {
+          // 末尾行の次行頭まで含めて消す(末尾の改行ごと削除)
+          range = new monaco.Range(firstLine, 1, lastLine2 + 1, 1);
+          replacement = '';
+        } else {
+          // 末尾が最終行: 前の行の末尾から最終行の末尾まで消す
+          // (これで「前の行の改行も消える」状態になる)
+          if (firstLine > 1) {
+            var prevLine = firstLine - 1;
+            var prevCol = model.getLineMaxColumn(prevLine);
+            range = new monaco.Range(prevLine, prevCol, lastLine2, model.getLineMaxColumn(lastLine2));
+            replacement = '';
+          } else {
+            // ファイル全体を消す
+            range = new monaco.Range(1, 1, lastLine2, model.getLineMaxColumn(lastLine2));
+            replacement = '';
+          }
+        }
+      } else {
+        // 通常ハンク: 新側の newStart..newStart+newCount-1 行を、
+        // 旧テキストで置き換える(行ごとに改行を入れる)。
+        var fLine = hunk.newStart;
+        var lLine = hunk.newStart + hunk.newCount - 1;
+        if (fLine < 1) fLine = 1;
+        if (lLine > lineCount) lLine = lineCount;
+        // 行範囲を「行頭から行末まで」で取る。改行は含めない。
+        range = new monaco.Range(fLine, 1, lLine, model.getLineMaxColumn(lLine));
+        replacement = beforeLines.join('\n');
+      }
+
+      // Undo 履歴に乗る形で編集を実行
+      editor.executeEdits('mte-diff-revert', [
+        { range: range, text: replacement, forceMoveMarkers: true }
+      ]);
+
+      // 戻したらパネルを閉じる
+      closePeekPanel();
+    }
+
+    function closePeekPanel() {
+      if (!peekState) return;
+      try {
+        var zoneId = peekState.viewZoneId;
+        editor.changeViewZones(function (accessor) {
+          if (zoneId !== null) accessor.removeZone(zoneId);
+        });
+      } catch (e) { /* ignore */ }
+      peekState = null;
+    }
+  }
+
+  // ------------------------------------------------------------
+  // git 互換 行diff (Myers, O(ND))
+  // ------------------------------------------------------------
+  // 入力: 2文字列(before, after)
+  // 出力: { lineClass:{currの行番号:'added'|'modified'}, deletedAt:Set<curr行番号> }
+  //
+  // VS Code の Git gutter は内部で git diff を実行してその結果を装飾している。
+  // Monaco の内蔵 diff エンジンとは別物のため、git と同じ Myers アルゴリズムを
+  // 自前で実装することで挙動を一致させる。indent-heuristic は今のところ
+  // 未実装(現状のテストケースでは結果が変わらない)。
+  function gitDiffForGutter(beforeText, afterText) {
+    var a = gitDiffNormLines(beforeText);
+    var b = gitDiffNormLines(afterText);
+    var ops = gitMyersDiff(a, b);
+    // 変更ブロックを compact 化(git 互換): 隣接 eq に空行を吸わせて、
+    // 削除と挿入を一つのハンクにまとめる。これにより VS Code の Git gutter と
+    // 同じ「変更扱い」表示になる。
+    ops = gitChangeCompact(a, b, ops);
+    var hunks = gitOpsToHunks(ops);
+    var lc = gitHunksToLineClass(hunks, b.length);
+    return { lineClass: lc.lineClass, deletedAt: lc.deletedAt, hunks: hunks };
+  }
+
+  // ============================================================
+  // diff モード(左右並列表示)用の差分計算
+  // ============================================================
+  // 左(変更前) と 右(変更後) の Monaco エディタに、それぞれ:
+  //   leftDeco:  Set<行番号> 削除/変更された左の行(赤背景・行頭 -)
+  //   rightDeco: Set<行番号> 追加/変更された右の行(緑背景・行頭 +)
+  // を表示するためのデータを返す。
+  // また、スクロール同期用に左↔右の行対応マップを返す:
+  //   leftToRight: Array(leftTotal+1) → 対応する右の行番号
+  //   rightToLeft: Array(rightTotal+1) → 対応する左の行番号
+  //   ※ 0インデックスは未使用、leftToRight[lineNum] でアクセス
+  //   ※ ハンク内の対応行は「ハンク先頭の対応点」を指す(VS Code 流の挙動)
+  function gitDiffForSideBySide(beforeText, afterText) {
+    var a = gitDiffNormLines(beforeText);
+    var b = gitDiffNormLines(afterText);
+    var ops = gitMyersDiff(a, b);
+    ops = gitChangeCompact(a, b, ops);
+
+    var leftTotal = a.length;
+    var rightTotal = b.length;
+    var leftDeco = new Set();
+    var rightDeco = new Set();
+    var leftToRight = new Array(leftTotal + 2);
+    var rightToLeft = new Array(rightTotal + 2);
+
+    // ops を走査して、左右の行装飾と行対応を作る。
+    // ops は eq/del/ins の列。左の行番号(li)と右の行番号(ri)を1始まりで進める。
+    var li = 1, ri = 1;
+    // ハンク開始時点のスナップショット(行対応の基準点として使う)
+    var hunkLiStart = null;
+    var hunkRiStart = null;
+
+    function flushHunkMappingIfAny() {
+      // ハンク中は「ハンク開始点」を共通の対応先として扱う
+      // (個別行同士の対応は曖昧なため、ハンク先頭で揃える)
+      if (hunkLiStart === null) return;
+      // すでに各行は leftDeco/rightDeco に積まれている。
+      // 行対応マップは「ハンク内のすべての行はハンク先頭点に揃える」
+      var targetRight = hunkRiStart;
+      var targetLeft = hunkLiStart;
+      for (var l = hunkLiStart; l < li; l++) leftToRight[l] = targetRight;
+      for (var r = hunkRiStart; r < ri; r++) rightToLeft[r] = targetLeft;
+      hunkLiStart = null;
+      hunkRiStart = null;
+    }
+
+    for (var k = 0; k < ops.length; k++) {
+      var op = ops[k];
+      if (op.op === 'eq') {
+        flushHunkMappingIfAny();
+        leftToRight[li] = ri;
+        rightToLeft[ri] = li;
+        li++; ri++;
+      } else if (op.op === 'del') {
+        if (hunkLiStart === null) { hunkLiStart = li; hunkRiStart = ri; }
+        leftDeco.add(li);
+        li++;
+      } else if (op.op === 'ins') {
+        if (hunkLiStart === null) { hunkLiStart = li; hunkRiStart = ri; }
+        rightDeco.add(ri);
+        ri++;
+      }
+    }
+    flushHunkMappingIfAny();
+
+    // 端の番兵: 範囲外アクセス時のフォールバック
+    leftToRight[0] = 0;
+    rightToLeft[0] = 0;
+    leftToRight[leftTotal + 1] = rightTotal + 1;
+    rightToLeft[rightTotal + 1] = leftTotal + 1;
+
+    return {
+      leftTotal: leftTotal,
+      rightTotal: rightTotal,
+      leftDeco: leftDeco,
+      rightDeco: rightDeco,
+      leftToRight: leftToRight,
+      rightToLeft: rightToLeft
+    };
+  }
+
+  function gitDiffNormLines(text) {
+    var s = String(text == null ? '' : text).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    if (s === '') return [];
+    var lines = s.split('\n');
+    // 末尾改行を持つテキスト("a\nb\n" → ["a","b",""])は末尾の空要素を捨てる。
+    if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+    return lines;
+  }
+
+  // Myers O(ND): James Coglan 流の実装。
+  // 前進フェーズで各 d の前進完了時の V を trace[d] に保存し、
+  // 復元フェーズで (N,M) から逆向きに1ステップずつ辿る。
+  function gitMyersDiff(a, b) {
+    var N = a.length, M = b.length;
+    var MAX = N + M;
+    if (N === 0 && M === 0) return [];
+
+    var sz = 2 * MAX + 1;
+    var V = new Array(sz).fill(0);
+    V[MAX + 1] = 0;
+
+    var trace = [];
+    var dEnd = -1;
+
+    outer:
+    for (var d = 0; d <= MAX; d++) {
+      for (var k = -d; k <= d; k += 2) {
+        var x;
+        if (k === -d || (k !== d && V[MAX + k - 1] < V[MAX + k + 1])) {
+          x = V[MAX + k + 1];
+        } else {
+          x = V[MAX + k - 1] + 1;
+        }
+        var y = x - k;
+        while (x < N && y < M && a[x] === b[y]) { x++; y++; }
+        V[MAX + k] = x;
+        if (x >= N && y >= M) { dEnd = d; trace.push(V.slice()); break outer; }
+      }
+      trace.push(V.slice());
+    }
+
+    var ops = [];
+    var xi = N, yi = M;
+    for (var d2 = dEnd; d2 > 0; d2--) {
+      var prevV = trace[d2 - 1];
+      var k2 = xi - yi;
+      var prevK;
+      if (k2 === -d2 || (k2 !== d2 && prevV[MAX + k2 - 1] < prevV[MAX + k2 + 1])) {
+        prevK = k2 + 1;
+      } else {
+        prevK = k2 - 1;
+      }
+      var prevX = prevV[MAX + prevK];
+      var prevY = prevX - prevK;
+      while (xi > prevX && yi > prevY) {
+        ops.push({ op: 'eq', line: a[xi - 1] });
+        xi--; yi--;
+      }
+      if (xi === prevX) {
+        ops.push({ op: 'ins', line: b[yi - 1] });
+        yi--;
+      } else {
+        ops.push({ op: 'del', line: a[xi - 1] });
+        xi--;
+      }
+    }
+    while (xi > 0 && yi > 0) {
+      ops.push({ op: 'eq', line: a[xi - 1] });
+      xi--; yi--;
+    }
+    while (xi > 0) { ops.push({ op: 'del', line: a[xi - 1] }); xi--; }
+    while (yi > 0) { ops.push({ op: 'ins', line: b[yi - 1] }); yi--; }
+    ops.reverse();
+    return ops;
+  }
+
+  // ============================================================
+  // git の xdl_change_compact 相当のロジック（JS 移植）
+  // ============================================================
+  // Myers の出力した編集スクリプトは、削除と挿入の境界が改行などで
+  // 分断されることがあり、ハンク数が増えがち（例: 削除1行→空行→挿入2行 を
+  // 「削除ハンク + 追加ハンク」に分けてしまう）。
+  // git は change group を上下にスライドして、もう片方のファイルの change
+  // と並ぶ位置に揃えることで、これを1つのハンクにまとめる。これによって
+  // VS Code の Git gutter と同じ「削除+追加 → 変更扱い」表示になる。
+  //
+  // 入出力: ops 配列を ops 配列に変換(同じ編集内容、行配置だけ最適化)。
+  function gitChangeCompact(a, b, ops) {
+    // ops → 2つの changed ビット配列
+    var lenA = a.length, lenB = b.length;
+    var changedA = new Array(lenA + 1).fill(false);
+    var changedB = new Array(lenB + 1).fill(false);
+    var ai = 0, bi = 0;
+    ops.forEach(function (op) {
+      if (op.op === 'eq') { ai++; bi++; }
+      else if (op.op === 'del') { changedA[ai++] = true; }
+      else if (op.op === 'ins') { changedB[bi++] = true; }
+    });
+
+    // 旧側を主・新側を従でスライド → 新側を主・旧側を従でスライド
+    gitCompactOneSide(changedA, a, changedB, b);
+    gitCompactOneSide(changedB, b, changedA, a);
+
+    // changed → ops を再構築（del を先、ins を後の順で並べる）
+    var out = [];
+    var ia = 0, ib = 0;
+    while (ia < lenA || ib < lenB) {
+      while (ia < lenA && ib < lenB && !changedA[ia] && !changedB[ib]) {
+        out.push({ op: 'eq', line: a[ia] });
+        ia++; ib++;
+      }
+      if (ia >= lenA && ib >= lenB) break;
+      while (ia < lenA && changedA[ia]) {
+        out.push({ op: 'del', line: a[ia] });
+        ia++;
+      }
+      while (ib < lenB && changedB[ib]) {
+        out.push({ op: 'ins', line: b[ib] });
+        ib++;
+      }
+    }
+    return out;
+  }
+
+  // 1方向の compact: changedX 側を主としてスライドする。
+  // changedO は対応する「もう片方」のビット配列で、スライドに同期して
+  // 同じ index 位置のグループを辿る。
+  function gitCompactOneSide(changedX, recsX, changedO, recsO) {
+    var nrecX = recsX.length, nrecO = recsO.length;
+    var g = gitGroupInit(changedX);
+    var go = gitGroupInit(changedO);
+
+    while (true) {
+      if (g.end === g.start) {
+        if (gitGroupNext(changedX, nrecX, g) === -1) break;
+        gitGroupNext(changedO, nrecO, go);
+        continue;
+      }
+
+      var earliestEnd, endMatchingOther, groupsize;
+
+      do {
+        groupsize = g.end - g.start;
+        endMatchingOther = -1;
+
+        // 上にスライドできる限り
+        while (gitGroupSlideUp(changedX, recsX, g) === 0) {
+          if (gitGroupPrevious(changedO, go) === -1) break;
+        }
+        earliestEnd = g.end;
+        if (go.end > go.start) endMatchingOther = g.end;
+
+        // 下にスライドできる限り
+        while (true) {
+          if (gitGroupSlideDown(changedX, recsX, nrecX, g) !== 0) break;
+          if (gitGroupNext(changedO, nrecO, go) === -1) break;
+          if (go.end > go.start) endMatchingOther = g.end;
+        }
+      } while (groupsize !== (g.end - g.start));
+
+      // 並ぶ位置に戻す（これが「削除+挿入を変更にまとめる」効果）
+      if (g.end === earliestEnd) {
+        // スライドできなかった
+      } else if (endMatchingOther !== -1) {
+        while (go.end === go.start) {
+          if (gitGroupSlideUp(changedX, recsX, g) !== 0) break;
+          if (gitGroupPrevious(changedO, go) === -1) break;
+        }
+      }
+      // indent-heuristic は未実装
+
+      if (gitGroupNext(changedX, nrecX, g) === -1) break;
+      gitGroupNext(changedO, nrecO, go);
+    }
+  }
+
+  function gitGroupInit(changed) {
+    var g = { start: 0, end: 0 };
+    while (changed[g.end]) g.end++;
+    return g;
+  }
+  function gitGroupNext(changed, nrec, g) {
+    if (g.end === nrec) return -1;
+    g.start = g.end + 1;
+    g.end = g.start;
+    while (changed[g.end]) g.end++;
+    return 0;
+  }
+  function gitGroupPrevious(changed, g) {
+    if (g.start === 0) return -1;
+    g.end = g.start - 1;
+    g.start = g.end;
+    while (g.start > 0 && changed[g.start - 1]) g.start--;
+    return 0;
+  }
+  function gitGroupSlideDown(changed, recs, nrec, g) {
+    if (g.end < nrec && recs[g.start] === recs[g.end]) {
+      changed[g.start] = false;
+      g.start++;
+      changed[g.end] = true;
+      g.end++;
+      while (changed[g.end]) g.end++;
+      return 0;
+    }
+    return -1;
+  }
+  function gitGroupSlideUp(changed, recs, g) {
+    if (g.start > 0 && recs[g.start - 1] === recs[g.end - 1]) {
+      g.start--;
+      changed[g.start] = true;
+      g.end--;
+      changed[g.end] = false;
+      while (g.start > 0 && changed[g.start - 1]) g.start--;
+      return 0;
+    }
+    return -1;
+  }
+
+  // ops配列をハンクにまとめる。eq境界で del/ins の塊を1ハンクに。
+  function gitOpsToHunks(ops) {
+    var hunks = [];
+    var oldLine = 1, newLine = 1;
+    var i = 0;
+    while (i < ops.length) {
+      while (i < ops.length && ops[i].op === 'eq') {
+        oldLine++; newLine++; i++;
+      }
+      if (i >= ops.length) break;
+      var hOldStart = oldLine, hNewStart = newLine;
+      var dels = [], inss = [];
+      while (i < ops.length && ops[i].op !== 'eq') {
+        if (ops[i].op === 'del') {
+          dels.push({ idx: oldLine, line: ops[i].line });
+          oldLine++;
+        } else if (ops[i].op === 'ins') {
+          inss.push({ idx: newLine, line: ops[i].line });
+          newLine++;
+        }
+        i++;
+      }
+      hunks.push({
+        oldStart: hOldStart, oldCount: oldLine - hOldStart,
+        newStart: hNewStart, newCount: newLine - hNewStart,
+        dels: dels, inss: inss
+      });
+    }
+    return hunks;
+  }
+
+  // ============================================================
+  // hunks → gutter表示用 {lineClass, deletedAt}
+  // ------------------------------------------------------------
+  // ハンク内の振り分け戦略:
+  //   newCount===0  → 純削除(赤三角)
+  //   oldCount===0  → 純追加(全てadded)
+  //   oldCount===newCount → 「位置で1対1 modified」(1文字変更等を青で出す)
+  //   行数違い → 「類似度ペアリング」: 削除行と追加行のうち類似度の高い
+  //               組を modified、残った追加=added、残った削除=赤三角。
+  //
+  // この振り分けにより、VS Code Git gutter と同じ
+  // 「削除と追加のうち、似てる方がペア=変更」表示になる。
+  //
+  // ロールバック: GIT_DIFF_USE_PAIRING を false にすれば旧ロジック(先頭から
+  // min(old,new)を modified)に戻る。
+  var GIT_DIFF_USE_PAIRING = true;     // VS Code流ペアリングON/OFF
+  var GIT_DIFF_PAIR_THRESHOLD = 0.5;   // 類似度しきい値(未満ならペアにしない)
+
+  function gitHunksToLineClass(hunks, newTotal) {
+    var lineClass = {};
+    var deletedAt = new Set();
+    hunks.forEach(function (h) {
+      if (h.newCount === 0 && h.oldCount > 0) {
+        var ln = h.newStart;
+        if (ln < 1) ln = 1;
+        if (ln > newTotal) ln = newTotal;
+        deletedAt.add(ln);
+        return;
+      }
+      if (h.oldCount === 0) {
+        for (var ai = 0; ai < h.newCount; ai++) {
+          var lna = h.newStart + ai;
+          if (lna >= 1 && lna <= newTotal) lineClass[lna] = 'added';
+        }
+        return;
+      }
+
+      // ペアリングOFF or 行数が同じ → 位置で1対1 modified
+      if (!GIT_DIFF_USE_PAIRING || h.oldCount === h.newCount) {
+        var common = Math.min(h.oldCount, h.newCount);
+        for (var i = 0; i < h.newCount; i++) {
+          var ln = h.newStart + i;
+          if (ln < 1 || ln > newTotal) continue;
+          lineClass[ln] = (i < common) ? 'modified' : 'added';
+        }
+        if (h.oldCount > h.newCount && h.newCount > 0) {
+          var anchor = h.newStart + h.newCount;
+          if (anchor > newTotal) anchor = newTotal;
+          if (anchor < 1) anchor = 1;
+          deletedAt.add(anchor);
+        }
+        return;
+      }
+
+      // 行数違い → 類似度ペアリング
+      // VS Code流: 削除超過分は赤三角を出さない（変更マークだけで表現）。
+      // 「何行か減った」事実は gutter には出ず、modified の表示に吸収される。
+      var r = gitPairLinesBySimilarity(h.dels, h.inss, GIT_DIFF_PAIR_THRESHOLD);
+      r.pairs.forEach(function (p) {
+        var ln = p[1];
+        if (ln >= 1 && ln <= newTotal) lineClass[ln] = 'modified';
+      });
+      r.unpairedIns.forEach(function (ln) {
+        if (ln >= 1 && ln <= newTotal) lineClass[ln] = 'added';
+      });
+      // unpairedDels は赤三角を出さない（VS Code流）。
+      // 純削除(newCount===0)のときだけ赤三角を出す（上の分岐で処理済み）。
+    });
+    return { lineClass: lineClass, deletedAt: deletedAt };
+  }
+
+  // ------------------------------------------------------------
+  // 削除行と追加行を文字列類似度でペアリングする (VS Code流)
+  // ------------------------------------------------------------
+  // バイグラム Dice 係数で類似度を計算し、各削除行に対して最も似ている
+  // 追加行をペアにする。閾値未満ならペアにしない。
+  function gitPairLinesBySimilarity(dels, inss, threshold) {
+    if (threshold == null) threshold = 0.5;
+    var pairs = [];
+    var usedIns = new Set();
+    var unpairedDels = [];
+    dels.forEach(function (d) {
+      var bestSim = -1, bestJ = -1;
+      inss.forEach(function (ins, j) {
+        if (usedIns.has(j)) return;
+        var s = gitLineSimilarity(d.line, ins.line);
+        if (s > bestSim) { bestSim = s; bestJ = j; }
+      });
+      if (bestJ >= 0 && bestSim >= threshold) {
+        pairs.push([d.idx, inss[bestJ].idx]);
+        usedIns.add(bestJ);
+      } else {
+        unpairedDels.push(d.idx);
+      }
+    });
+    var unpairedIns = [];
+    inss.forEach(function (ins, j) {
+      if (!usedIns.has(j)) unpairedIns.push(ins.idx);
+    });
+    return { pairs: pairs, unpairedDels: unpairedDels, unpairedIns: unpairedIns };
+  }
+
+  // バイグラム Dice 係数。0.0〜1.0。完全一致=1.0、無関係=0.0。
+  function gitLineSimilarity(s1, s2) {
+    if (s1 === s2) return 1.0;
+    if (!s1 || !s2) return 0.0;
+    function bigrams(s) {
+      var m = new Map();
+      if (s.length < 2) { m.set(s, 1); return m; }
+      for (var i = 0; i < s.length - 1; i++) {
+        var bg = s.substr(i, 2);
+        m.set(bg, (m.get(bg) || 0) + 1);
+      }
+      return m;
+    }
+    var b1 = bigrams(s1), b2 = bigrams(s2);
+    var inter = 0;
+    b1.forEach(function (cnt, bg) {
+      var c2 = b2.get(bg) || 0;
+      inter += Math.min(cnt, c2);
+    });
+    var total = 0;
+    b1.forEach(function (c) { total += c; });
+    b2.forEach(function (c) { total += c; });
+    return total === 0 ? 0 : (2 * inter) / total;
+  }
+
 
   // ============================================================
   // 本文中の表ブロックを検出し、その先頭行の glyph margin にアイコンを置く。

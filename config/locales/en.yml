@@ -108,6 +108,29 @@ en:
     ticket_not_found: "ticket not found"
     note_prefix: "Note #"
 
+    # Change history (diff) dropdown
+    history_btn: "History"
+    history_btn_tip: "Show diff between past versions"
+    history_dropdown_title: "Select a diff to compare"
+    history_to_next: "next version"
+    history_to_current: "current"
+    history_creation: "Creation"
+    history_empty: "No change history"
+    history_truncated_note: "Older entries are omitted"
+
+    # Relative time labels (Blame hint)
+    rel_just_now: "just now"
+    rel_minutes_ago: "minutes ago"
+    rel_hours_ago: "hours ago"
+    rel_days_ago: "days ago"
+    rel_months_ago: "months ago"
+    rel_years_ago: "years ago"
+
+    # Blame tooltip
+    lines_suffix: " lines"
+    no_desc_change: "No description change"
+    show_diff: "Show diff"
+
     # My account page
     pref_section: "Monaco Editor"
     pref_enabled: "Use Monaco Editor"
