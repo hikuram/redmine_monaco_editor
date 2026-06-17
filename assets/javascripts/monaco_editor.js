@@ -698,9 +698,76 @@
       });
   }
 
+  // ============================================================
+  // DMSF文書一覧のキャッシュと先読み（{{dmsf(id)}} 引数補完用）
+  // ============================================================
+  // {{dmsf( の括弧内で、現在のプロジェクトのDMSF文書を候補に出す。
+  // 表示はフォルダパス込みのファイル名、挿入は文書ID。
+  // 取得は /monaco_editor/dmsf_files。DMSF未導入環境では空配列が返り、
+  // 補完が出ないだけで何も壊れない。
+  var dmsfFileListCache = null;
+  var dmsfFetchStarted = false;
+
+  function prefetchDmsfFiles() {
+    if (dmsfFetchStarted) { return; }
+    dmsfFetchStarted = true;
+
+    // 現在のプロジェクトに絞って取得（候補を膨らませない・権限評価を軽く）。
+    var proj = detectCurrentProject();
+    var url = '/monaco_editor/dmsf_files' +
+      (proj ? ('?project_id=' + encodeURIComponent(proj)) : '');
+
+    fetch(url, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      credentials: 'same-origin'
+    })
+      .then(function (res) {
+        if (!res.ok) { throw new Error('HTTP ' + res.status); }
+        return res.json();
+      })
+      .then(function (list) {
+        dmsfFileListCache = Array.isArray(list) ? list : [];
+      })
+      .catch(function () {
+        dmsfFileListCache = [];
+      });
+  }
+
+  // {{dmsf( … の括弧内でDMSF文書候補を返す。
+  // 挿入は文書ID。閉じ ")" と "}}" はマクロ側の構造が既に持つため、
+  // ここではIDだけを挿入する（providePageArg と同じ方針）。
+  // typed は ( 以降に打った文字（IDの数字 or 絞り込み文字列）。
+  function provideDmsfArg(model, position, typed) {
+    if (!dmsfFileListCache || dmsfFileListCache.length === 0) {
+      return { suggestions: [] };
+    }
+    var startCol = position.column - typed.length; // ID開始位置（(の直後）
+    var range = {
+      startLineNumber: position.lineNumber, startColumn: startCol,
+      endLineNumber: position.lineNumber, endColumn: position.column
+    };
+
+    var suggestions = dmsfFileListCache.map(function (f) {
+      return {
+        label: f.path,                                   // フォルダパス込みの表示名
+        kind: window.monaco.languages.CompletionItemKind.File,
+        detail: '#' + f.id + (f.project_name ? ('  ' + f.project_name) : ''),
+        insertText: String(f.id),                        // 挿入は文書ID
+        // パスでもIDでも絞り込めるように両方をfilterTextへ。
+        filterText: f.path + ' ' + f.id,
+        range: range
+      };
+    });
+    return { suggestions: suggestions };
+  }
+
   // ページ名（Wikiページ）を引数に取るマクロ。括弧内でWikiページ補完を出す。
   // 小文字で比較する。必要に応じてここに追記すれば対応マクロを増やせる。
   var WIKI_PAGE_ARG_MACROS = ['include', 'child_pages'];
+
+  // ID（DMSF文書ID）を引数に取るマクロ。括弧内でDMSF文書補完を出す。
+  var DMSF_ID_ARG_MACROS = ['dmsf'];
 
   // {{include( … や {{child_pages( … の括弧内でWikiページ候補を返す。
   // 挿入はWikiリンクCompletionと同じ方針:
@@ -743,6 +810,8 @@
 
     // 取得を開始（非同期。候補が出るまでに間に合わなければ次回入力で出る）
     prefetchMacros();
+    // {{dmsf( 引数補完のためのDMSF文書一覧も先読みする。
+    prefetchDmsfFiles();
 
     // markdown / textile 両方で効かせる。
     ['markdown', 'textile'].forEach(function (lang) {
@@ -769,6 +838,11 @@
           var pm = /\{\{([a-zA-Z0-9_]+)\(([^()]*)$/.exec(lineText);
           if (pm && WIKI_PAGE_ARG_MACROS.indexOf(pm[1].toLowerCase()) !== -1) {
             return providePageArg(model, position, pm[2]);
+          }
+          // {{dmsf( … の括弧内なら、DMSF文書ID補完を出す。
+          //   pm[1] = マクロ名, pm[2] = ( 以降に打った文字（IDの途中等）
+          if (pm && DMSF_ID_ARG_MACROS.indexOf(pm[1].toLowerCase()) !== -1) {
+            return provideDmsfArg(model, position, pm[2]);
           }
 
           // カーソル直前の {{<入力中のマクロ名> を検出。
