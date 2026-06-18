@@ -2050,6 +2050,9 @@
       // 行番号の左の余白（glyph margin）を有効化する。
       glyphMargin: true,
       wordWrap: 'on',
+      // 'auto'だとChromeがスクリーンリーダを誤検出し、折り返し行でIME位置がズレる
+      // (候補が右端やスクロールバー外に出る)。'off'で通常挙動に戻る。
+      accessibilitySupport: 'off',
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
       fontSize: prefFontSize(),
