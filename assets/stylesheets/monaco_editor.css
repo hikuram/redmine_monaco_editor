@@ -1450,10 +1450,10 @@ body.theme-mte-github-dark .monaco-history-menu-item:focus {
    ============================================================ */
 /* body.diff-mode の時は split-view レイアウトを流用しつつ、
    プレビューペインは表示しない(diff コンテナがその場所を使う)。 */
-.monaco-editor-wrapper.diff-mode .monaco-preview-pane {
+.monaco-editor-body.diff-mode .monaco-preview-pane {
   display: none;
 }
-.monaco-editor-wrapper.diff-mode .monaco-splitter {
+.monaco-editor-body.diff-mode .monaco-splitter {
   display: none;
 }
 
@@ -1565,25 +1565,25 @@ body.theme-mte-github-dark .monaco-history-menu-item:focus {
 }
 
 body.theme-mte-github-dark .monaco-diff-container,
-.monaco-editor-wrapper.diff-mode.theme-mte-github-dark .monaco-diff-container {
+.monaco-editor-body.diff-mode.theme-mte-github-dark .monaco-diff-container {
   background: #0d1117;
 }
 body.theme-mte-github-dark .monaco-diff-container .monaco-diff-header,
-.monaco-editor-wrapper.diff-mode.theme-mte-github-dark .monaco-diff-container .monaco-diff-header {
+.monaco-editor-body.diff-mode.theme-mte-github-dark .monaco-diff-container .monaco-diff-header {
   background: #161b22;
   border-bottom-color: #30363d;
   color: #8b949e;
 }
 body.theme-mte-github-dark .monaco-diff-container .monaco-diff-pane,
-.monaco-editor-wrapper.diff-mode.theme-mte-github-dark .monaco-diff-container .monaco-diff-pane {
+.monaco-editor-body.diff-mode.theme-mte-github-dark .monaco-diff-container .monaco-diff-pane {
   border-left-color: #30363d;
 }
 body.theme-mte-github-dark .monaco-diff-container .monaco-diff-close,
-.monaco-editor-wrapper.diff-mode.theme-mte-github-dark .monaco-diff-container .monaco-diff-close {
+.monaco-editor-body.diff-mode.theme-mte-github-dark .monaco-diff-container .monaco-diff-close {
   color: #8b949e;
 }
 body.theme-mte-github-dark .monaco-diff-container .monaco-diff-close:hover,
-.monaco-editor-wrapper.diff-mode.theme-mte-github-dark .monaco-diff-container .monaco-diff-close:hover {
+.monaco-editor-body.diff-mode.theme-mte-github-dark .monaco-diff-container .monaco-diff-close:hover {
   background: #30363d;
   color: #e6edf3;
 }
