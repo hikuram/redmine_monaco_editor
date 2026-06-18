@@ -1528,6 +1528,14 @@ body.theme-mte-github-dark .monaco-history-menu-item:focus {
 .monaco-editor .mte-diff-side-added {
   background-color: rgba(46, 160, 67, 0.14); /* 薄い緑 */
 }
+/* 行内の濃い色ハイライト (実際に変わった文字に当てる)。
+   行全体の薄い背景の上に重なるため、こちらは濃いめの背景を当てる。 */
+.monaco-editor .mte-diff-token-removed {
+  background-color: rgba(207, 34, 46, 0.12) !important; /* 濃い赤 */
+}
+.monaco-editor .mte-diff-token-added {
+  background-color: rgba(46, 160, 67, 0.14) !important; /* 濃い緑 */
+}
 /* 行頭の -/+ マーカー。glyphMargin に出す。 */
 .monaco-editor .mte-diff-glyph-minus,
 .monaco-editor .mte-diff-glyph-plus {
@@ -1554,6 +1562,15 @@ body.theme-mte-github-dark .monaco-history-menu-item:focus {
 .monaco-editor.vs-dark .mte-diff-side-added,
 .monaco-editor.mte-github-dark .mte-diff-side-added {
   background-color: rgba(63, 185, 80, 0.16);
+}
+/* 行内ハイライト (ダーク) */
+.monaco-editor.vs-dark .mte-diff-token-removed,
+.monaco-editor.mte-github-dark .mte-diff-token-removed {
+  background-color: rgba(248, 81, 73, 0.16) !important;
+}
+.monaco-editor.vs-dark .mte-diff-token-added,
+.monaco-editor.mte-github-dark .mte-diff-token-added {
+  background-color: rgba(63, 185, 80, 0.12) !important;
 }
 .monaco-editor.vs-dark .mte-diff-glyph-minus::before,
 .monaco-editor.mte-github-dark .mte-diff-glyph-minus::before {

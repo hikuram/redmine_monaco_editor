@@ -2529,14 +2529,23 @@
 
     // 左右どちらかのエディタに、diff の装飾(背景色+行頭マーカー)を貼る。
     // side: 'left' = 削除/旧側、'right' = 追加/新側
+    //
+    // 装飾の2層構造:
+    //   1. 行全体の薄い赤/緑背景 + 行頭 -/+ マーカー (leftDeco/rightDeco)
+    //   2. linePairs (変更行ペア) に対する文字レベルの濃い赤/緑ハイライト
+    //      → 「行のどの文字が実際に変わったか」を VS Code Diff Editor 同様
+    //         一目で分かるように強調する
     function applyDiffSideDecorations(mn, ed, side, diff) {
       var set = (side === 'left') ? diff.leftDeco : diff.rightDeco;
       var bgCls = (side === 'left') ? 'mte-diff-side-removed' : 'mte-diff-side-added';
       var marginCls = (side === 'left') ? 'mte-diff-glyph-minus' : 'mte-diff-glyph-plus';
+      var tokenCls = (side === 'left') ? 'mte-diff-token-removed' : 'mte-diff-token-added';
       var model = ed.getModel();
       if (!model) return;
       var lineCount = model.getLineCount();
       var decos = [];
+
+      // 1) 行全体の薄い背景
       set.forEach(function (ln) {
         if (ln < 1 || ln > lineCount) return;
         decos.push({
@@ -2548,11 +2557,95 @@
           }
         });
       });
+
+      // 2) 変更行ペアに対する文字レベル装飾
+      // linePairs の各ペアで、左テキストと右テキストを文字レベル diff し、
+      // 削除/追加された文字範囲に濃い色装飾を貼る。
+      if (diff.linePairs) {
+        diff.linePairs.forEach(function (pair) {
+          var ln = (side === 'left') ? pair.leftLine : pair.rightLine;
+          if (ln < 1 || ln > lineCount) return;
+          var ranges = computeIntraLineDiffRanges(pair.leftText, pair.rightText, side);
+          ranges.forEach(function (r) {
+            // r = { start, end } 1始まりの文字位置 (Monacoのcolumn基準)
+            decos.push({
+              range: new mn.Range(ln, r.start, ln, r.end),
+              options: {
+                className: tokenCls,
+                inlineClassName: tokenCls
+              }
+            });
+          });
+        });
+      }
+
       if (typeof ed.createDecorationsCollection === 'function') {
         ed.createDecorationsCollection(decos);
       } else {
         ed.deltaDecorations([], decos);
       }
+    }
+
+    // 行内の文字レベル diff を計算して、装飾を貼るべき range を返す。
+    // side='left' なら削除文字 (del op)、side='right' なら追加文字 (ins op)。
+    // 戻り値の start/end は Monaco の column 値 (1始まり)。
+    //
+    // サロゲートペア対応: Array.from(str) で「コードポイント単位」に分解した
+    // 配列を gitMyersDiff に渡す。1コードポイントは UTF-16 で 1 or 2 ユニット
+    // だが、Monaco の column は UTF-16 ユニット単位なので、各 op の文字の
+    // .length を加算してカーソルを進める。
+    function computeIntraLineDiffRanges(leftText, rightText, side) {
+      var leftChars = Array.from(String(leftText || ''));
+      var rightChars = Array.from(String(rightText || ''));
+      var ops = gitMyersDiff(leftChars, rightChars);
+      var ranges = [];
+      // Monaco column (UTF-16 単位、1始まり)
+      var col = 1;
+      // ハンク蓄積用 (連続する del/ins をまとめて1つのrangeに)
+      var curStart = -1, curEnd = -1;
+
+      function flush() {
+        if (curStart !== -1) {
+          ranges.push({ start: curStart, end: curEnd });
+          curStart = -1; curEnd = -1;
+        }
+      }
+
+      // ops は a (=leftChars), b (=rightChars) を比較した結果。
+      // op.line には eq/del は a 側の文字、ins は b 側の文字が入る。
+      // side='left' のときは a 側 (eq + del) を走査して del 部分の column を集める。
+      // side='right' のときは b 側 (eq + ins) を走査して ins 部分の column を集める。
+      for (var i = 0; i < ops.length; i++) {
+        var op = ops[i];
+        var ch = op.line == null ? '' : op.line;
+        var u16len = String(ch).length || 1;
+
+        if (op.op === 'eq') {
+          flush();
+          col += u16len;
+        } else if (op.op === 'del') {
+          if (side === 'left') {
+            // 削除文字 = 左側に存在する文字 → column を集める
+            if (curStart === -1) { curStart = col; curEnd = col + u16len; }
+            else { curEnd = col + u16len; }
+            col += u16len;
+          } else {
+            // 右側にとっては del は無関係。col は進めない
+            // (b 側を走査してるので、a 側の文字は飛ばすだけ)
+          }
+        } else if (op.op === 'ins') {
+          if (side === 'right') {
+            // 追加文字 = 右側に存在する文字 → column を集める
+            if (curStart === -1) { curStart = col; curEnd = col + u16len; }
+            else { curEnd = col + u16len; }
+            col += u16len;
+          } else {
+            // 左側にとっては ins は無関係。col は進めない
+          }
+        }
+      }
+      flush();
+      return ranges;
     }
 
     btnEdit.addEventListener('click', function () { setMode('edit'); });
@@ -5001,6 +5094,12 @@
     var rightDeco = new Set();
     var leftToRight = new Array(leftTotal + 2);
     var rightToLeft = new Array(rightTotal + 2);
+    // 「変更扱い」の行ペア。VS Code の Diff Editor 同様、連続する del/ins の
+    // ブロック内で類似度の高い行同士をマッチングしてペアにする。
+    // ペアの行同士には、後段で文字レベル diff を当てて「行内のどの文字が
+    // 変わったか」を濃い色でハイライトする。
+    // 形式: [{ leftLine, rightLine, leftText, rightText }, ...]
+    var linePairs = [];
 
     // ops を走査して、左右の行装飾と行対応を作る。
     // ops は eq/del/ins の列。左の行番号(li)と右の行番号(ri)を1始まりで進める。
@@ -5008,19 +5107,40 @@
     // ハンク開始時点のスナップショット(行対応の基準点として使う)
     var hunkLiStart = null;
     var hunkRiStart = null;
+    // 現在のハンクの del/ins バッファ。{idx, line, lineNumber} の配列。
+    // idx は gitPairLinesBySimilarity に渡すための配列内連番。
+    var hunkDels = [];
+    var hunkInss = [];
 
     function flushHunkMappingIfAny() {
       // ハンク中は「ハンク開始点」を共通の対応先として扱う
       // (個別行同士の対応は曖昧なため、ハンク先頭で揃える)
-      if (hunkLiStart === null) return;
-      // すでに各行は leftDeco/rightDeco に積まれている。
-      // 行対応マップは「ハンク内のすべての行はハンク先頭点に揃える」
-      var targetRight = hunkRiStart;
-      var targetLeft = hunkLiStart;
-      for (var l = hunkLiStart; l < li; l++) leftToRight[l] = targetRight;
-      for (var r = hunkRiStart; r < ri; r++) rightToLeft[r] = targetLeft;
+      if (hunkLiStart !== null) {
+        var targetRight = hunkRiStart;
+        var targetLeft = hunkLiStart;
+        for (var l = hunkLiStart; l < li; l++) leftToRight[l] = targetRight;
+        for (var r = hunkRiStart; r < ri; r++) rightToLeft[r] = targetLeft;
+      }
+
+      // このハンクで発生した del/ins を類似度マッチして linePairs に積む。
+      if (hunkDels.length > 0 && hunkInss.length > 0) {
+        var paired = gitPairLinesBySimilarity(hunkDels, hunkInss);
+        paired.pairs.forEach(function (p) {
+          // p = [delIdx, insIdx] = [hunkDels内インデックス, hunkInss内インデックス]
+          var d = hunkDels[p[0]];
+          var s = hunkInss[p[1]];
+          linePairs.push({
+            leftLine: d.lineNumber,
+            rightLine: s.lineNumber,
+            leftText: d.line,
+            rightText: s.line
+          });
+        });
+      }
       hunkLiStart = null;
       hunkRiStart = null;
+      hunkDels = [];
+      hunkInss = [];
     }
 
     for (var k = 0; k < ops.length; k++) {
@@ -5033,10 +5153,12 @@
       } else if (op.op === 'del') {
         if (hunkLiStart === null) { hunkLiStart = li; hunkRiStart = ri; }
         leftDeco.add(li);
+        hunkDels.push({ idx: hunkDels.length, line: a[li - 1], lineNumber: li });
         li++;
       } else if (op.op === 'ins') {
         if (hunkLiStart === null) { hunkLiStart = li; hunkRiStart = ri; }
         rightDeco.add(ri);
+        hunkInss.push({ idx: hunkInss.length, line: b[ri - 1], lineNumber: ri });
         ri++;
       }
     }
@@ -5054,7 +5176,8 @@
       leftDeco: leftDeco,
       rightDeco: rightDeco,
       leftToRight: leftToRight,
-      rightToLeft: rightToLeft
+      rightToLeft: rightToLeft,
+      linePairs: linePairs
     };
   }
 
