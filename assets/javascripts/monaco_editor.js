@@ -2432,6 +2432,14 @@
         domReadOnly: true,
         renderLineHighlight: 'none',
         scrollBeyondLastLine: false,
+        // メインエディタと同じく、エディタ内のスクロール余地が無いときは
+        // ホイールイベントをページに渡す。これが無いと diff モードの上で
+        // ホイールしてもページ全体がスクロールできなくなる。
+        scrollbar: {
+          vertical: 'auto',
+          horizontal: 'auto',
+          alwaysConsumeMouseWheel: false
+        },
         automaticLayout: true,
         glyphMargin: true,
         wordWrap: 'on',
