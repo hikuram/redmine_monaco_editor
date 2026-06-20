@@ -769,6 +769,108 @@
   // ID（DMSF文書ID）を引数に取るマクロ。括弧内でDMSF文書補完を出す。
   var DMSF_ID_ARG_MACROS = ['dmsf'];
 
+  // ============================================================
+  // Badge key list cache and prefetch (for {{badge(key)}} arg completion)
+  // ============================================================
+  // Inside {{badge( parentheses, suggest badge keys provided by the
+  // redmine_starside plugin. Source: /starside/badges (its completion API).
+  //
+  // When redmine_starside is not installed, this endpoint does not exist and
+  // the fetch fails (404 etc.). In that case the cache stays an empty array,
+  // and completion simply does not appear -- nothing breaks (same policy as
+  // when DMSF is absent). So this completion has no dependency on whether
+  // redmine_starside is present, and is safe to bundle.
+  var badgeListCache = null;
+  var badgeFetchStarted = false;
+
+  function prefetchBadges() {
+    if (badgeFetchStarted) { return; }
+    badgeFetchStarted = true;
+
+    // Fetch all keys once and filter on the client side.
+    // limit=0 means unlimited (redmine_starside spec).
+    fetch('/starside/badges?limit=0', {
+      method: 'GET',
+      headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      credentials: 'same-origin'
+    })
+      .then(function (res) {
+        if (!res.ok) { throw new Error('HTTP ' + res.status); }
+        return res.json();
+      })
+      .then(function (data) {
+        var items = data && data.items;
+        badgeListCache = Array.isArray(items) ? items : [];
+      })
+      .catch(function () {
+        // redmine_starside not installed or endpoint missing. Just no completion.
+        badgeListCache = [];
+      });
+  }
+
+  // Return badge key candidates inside {{badge( parentheses.
+  // Insert the key string only; the closing ")" and "}}" are already part of
+  // the macro structure (same policy as provideDmsfArg).
+  // typed is the text typed after "(" (the filter string for the key).
+  //
+  // Note: we intentionally DO show candidates right after {{badge( (typed
+  // empty), returning the full list ordered by key. This is required because
+  // "(" is a trigger char but the following letters are not; if we returned
+  // an empty list at "(", Monaco would close the widget and never re-open it
+  // as you keep typing. By returning the full list at "(", the widget stays
+  // open and Monaco narrows it down live as you type (e.g. {{badge(d).
+  function provideBadgeArg(model, position, typed) {
+    if (!badgeListCache || badgeListCache.length === 0) {
+      return { suggestions: [] };
+    }
+
+    var q = (typed || '').toLowerCase();
+    var startCol = position.column - (typed ? typed.length : 0); // key start (right after "(")
+    var range = {
+      startLineNumber: position.lineNumber, startColumn: startCol,
+      endLineNumber: position.lineNumber, endColumn: position.column
+    };
+
+    var matched;
+    if (q.length === 0) {
+      // Right after "(": show all keys, ordered by key name.
+      matched = badgeListCache.slice().sort(function (a, b) {
+        return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0);
+      });
+    } else {
+      // Filter by substring, ordering prefix matches first.
+      matched = badgeListCache.filter(function (b) {
+        return b && b.key && b.key.indexOf(q) !== -1;
+      });
+      matched.sort(function (a, b) {
+        var ap = a.key.indexOf(q) === 0 ? 0 : 1;
+        var bp = b.key.indexOf(q) === 0 ? 0 : 1;
+        if (ap !== bp) { return ap - bp; }
+        return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0);
+      });
+    }
+
+    var suggestions = matched.map(function (b, idx) {
+      return {
+        label: b.key,
+        kind: window.monaco.languages.CompletionItemKind.Color,
+        detail: b.label || '',
+        // Selecting a candidate shows a preview image (the badge). url is
+        // same-origin or shields.io. Embed as a Markdown image.
+        documentation: b.url ? { value: '![' + (b.label || b.key) + '](' + b.url + ')' } : undefined,
+        insertText: String(b.key),
+        filterText: b.key,
+        // Keep ordering via sortText (prefix match -> substring match).
+        sortText: ('000' + idx).slice(-4),
+        range: range
+      };
+    });
+    return { suggestions: suggestions };
+  }
+
+  // Macros that take a key (badge key) as argument; show badge key completion.
+  var BADGE_ARG_MACROS = ['badge'];
+
   // {{include( … や {{child_pages( … の括弧内でWikiページ候補を返す。
   // 挿入はWikiリンクCompletionと同じ方針:
   //   同一プロジェクト → ページ名のみ / 別プロジェクト → 識別子:ページ名
@@ -812,6 +914,10 @@
     prefetchMacros();
     // {{dmsf( 引数補完のためのDMSF文書一覧も先読みする。
     prefetchDmsfFiles();
+    // Prefetch the badge key list for {{badge( argument completion.
+    // When redmine_starside is absent this becomes an empty array, so
+    // completion just does not appear (harmless).
+    prefetchBadges();
 
     // markdown / textile 両方で効かせる。
     ['markdown', 'textile'].forEach(function (lang) {
@@ -843,6 +949,11 @@
           //   pm[1] = マクロ名, pm[2] = ( 以降に打った文字（IDの途中等）
           if (pm && DMSF_ID_ARG_MACROS.indexOf(pm[1].toLowerCase()) !== -1) {
             return provideDmsfArg(model, position, pm[2]);
+          }
+          // Inside {{badge( parentheses, show badge key completion.
+          //   When pm[2] is empty (right after {{badge() show nothing; filter after 1 char.
+          if (pm && BADGE_ARG_MACROS.indexOf(pm[1].toLowerCase()) !== -1) {
+            return provideBadgeArg(model, position, pm[2]);
           }
 
           // カーソル直前の {{<入力中のマクロ名> を検出。
