@@ -44,6 +44,17 @@ module RedmineMonacoEditor
 
     MAX_VERSIONS = 20
 
+    # このdiffデータの「持ち主」となるtextareaを指すCSSセレクタ。
+    # 説明欄の変更履歴は Redmine 標準の説明欄textarea(#issue_description)
+    # だけが持つ機能なので、フロントはこのセレクタに一致するエディタにのみ
+    # 「変更履歴ドロップダウン」「Blameヒント」を有効化する。
+    # コメント欄(#issue_notes)等は一致しないため、それらの機能は出ない。
+    #
+    # 将来、説明欄以外にも履歴を持たせたくなった場合は、サーバ側の
+    # このセレクタ宣言を変えるだけでフロントの有効範囲を制御できる
+    # （JS側に説明欄判定をハードコードしないための設計）。
+    OWNER_SELECTOR = '#issue_description'
+
     def build(issue)
       return nil if issue.nil? || issue.new_record?
 
@@ -62,11 +73,12 @@ module RedmineMonacoEditor
 
       if desc_changes.empty?
         return {
-          'issue_id'     => issue.id,
-          'current'      => current_text,
-          'current_meta' => creation_meta(issue),
-          'truncated'    => false,
-          'versions'     => []
+          'issue_id'       => issue.id,
+          'owner_selector' => OWNER_SELECTOR,
+          'current'        => current_text,
+          'current_meta'   => creation_meta(issue),
+          'truncated'      => false,
+          'versions'       => []
         }
       end
 
@@ -105,11 +117,12 @@ module RedmineMonacoEditor
       end
 
       {
-        'issue_id'     => issue.id,
-        'current'      => current_text,
-        'current_meta' => metas.last,
-        'truncated'    => truncated,
-        'versions'     => versions
+        'issue_id'       => issue.id,
+        'owner_selector' => OWNER_SELECTOR,
+        'current'        => current_text,
+        'current_meta'   => metas.last,
+        'truncated'      => truncated,
+        'versions'       => versions
       }
     end
 

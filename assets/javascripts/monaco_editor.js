@@ -4093,18 +4093,52 @@
 
 
   // ============================================================
+  // このtextareaが「変更履歴(diff)データの持ち主」かどうかを判定する
+  // ============================================================
+  // 変更履歴ドロップダウン(時計マーク)とBlameヒントは、過去履歴を持つ
+  // 説明欄だけの機能。ページ内の全textareaがMonaco化されるため、
+  // コメント欄(#issue_notes)等の他エディタにも window.MONACO_EDITOR_DIFF
+  // が見えてしまい、放置すると無関係なエディタに説明欄の履歴が出る。
+  //
+  // 「どのDOM要素がこのdiffの持ち主か」はサーバ側(DescriptionHistory)が
+  // owner_selector として宣言する。フロントはそれに一致するtextareaに
+  // だけ機能を許可する。JS側に説明欄判定をハードコードしないことで、
+  // 将来の対象拡張をサーバ側1箇所の変更で済ませられる。
+  //
+  // owner_selector が無い古いデータ形式のときは、後方互換として
+  // 標準の説明欄id(#issue_description)にフォールバックする。
+  function isDiffOwner(textarea) {
+    if (!textarea || typeof textarea.matches !== 'function') { return false; }
+    var DIFF = (typeof window !== 'undefined' && window.MONACO_EDITOR_DIFF) || null;
+    var selector = (DIFF && DIFF.owner_selector) || '#issue_description';
+    try {
+      return textarea.matches(selector);
+    } catch (e) {
+      // 不正なセレクタ等で matches が例外を投げた場合は安全側(=対象外)に倒す。
+      return false;
+    }
+  }
+
+  // ============================================================
   // 変更履歴ドロップダウン（Phase 2: UI のみ、Phase 3 で diff モード起動を実装）
   // ============================================================
   // 押すとボタンの下に「過去版同士の差分」を選べるドロップダウンが出る。
   // 各項目は #N → #M (次の版) / #N → 現在 のペア形式で並ぶ。
   //
   // データソース: window.MONACO_EDITOR_DIFF (Ruby側 view hook で埋め込み済み)。
-  // データが無い or 履歴ゼロのときはボタン自体を隠す。
+  // データが無い or 履歴ゼロ or このエディタが持ち主でないときはボタンを隠す。
   //
   // Phase 2 ではユーザーが項目を選んだら console.log するだけ。
   // Phase 3 でここを「diff モード起動」に差し替える。
   function setupHistoryDropdown(btn, editor, textarea) {
     var DIFF = (typeof window !== 'undefined' && window.MONACO_EDITOR_DIFF) || null;
+
+    // 説明欄(diffの持ち主)以外のエディタでは、時計マーク自体を出さない。
+    // コメント欄などはここで弾かれる。
+    if (!isDiffOwner(textarea)) {
+      btn.style.display = 'none';
+      return;
+    }
 
     // データが無い・履歴が空のときはボタン自体を非表示
     if (!DIFF || !DIFF.versions || DIFF.versions.length === 0) {
@@ -4305,6 +4339,8 @@
   function setupBlameHint(editor, textarea) {
     var monaco = window.monaco;
     if (!monaco) return;
+    // Blameヒントも過去履歴由来の機能。説明欄(diffの持ち主)以外では出さない。
+    if (!isDiffOwner(textarea)) return;
     var DIFF = (typeof window !== 'undefined' && window.MONACO_EDITOR_DIFF) || null;
     if (!DIFF || !DIFF.versions || DIFF.versions.length === 0) return;
 
