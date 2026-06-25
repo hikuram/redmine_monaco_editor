@@ -808,6 +808,21 @@
       });
   }
 
+  function toAbsoluteBadgeUrl(url) {
+    var u = String(url || '').trim();
+    if (u === '') { return u; }
+    // Already absolute (http://, https://, data:, blob:, etc.) or protocol-relative.
+    if (/^[a-z][a-z0-9+.-]*:/i.test(u) || u.indexOf('//') === 0) {
+      return u;
+    }
+    try {
+      // Resolves both "/badge/..." (root-relative) and "badge/..." (relative).
+      return new URL(u, window.location.origin).href;
+    } catch (e) {
+      return u;
+    }
+  }
+
   // Return badge key candidates inside {{badge( parentheses.
   // Insert the key string only; the closing ")" and "}}" are already part of
   // the macro structure (same policy as provideDmsfArg).
@@ -857,7 +872,7 @@
         detail: b.label || '',
         // Selecting a candidate shows a preview image (the badge). url is
         // same-origin or shields.io. Embed as a Markdown image.
-        documentation: b.url ? { value: '![' + (b.label || b.key) + '](' + b.url + ')' } : undefined,
+        documentation: b.url ? { value: '![' + (b.label || b.key) + '](' + toAbsoluteBadgeUrl(b.url) + ')' } : undefined,
         insertText: String(b.key),
         filterText: b.key,
         // Keep ordering via sortText (prefix match -> substring match).
