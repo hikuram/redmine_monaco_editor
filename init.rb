@@ -1,12 +1,13 @@
 require_relative 'lib/redmine_monaco_editor/settings'
 require_relative 'lib/redmine_monaco_editor/my_controller_patch'
 require_relative 'lib/redmine_monaco_editor/description_history'
+require_relative 'lib/redmine_monaco_editor/wiki_history'
 
 Redmine::Plugin.register :redmine_monaco_editor do
   name        'Redmine Monaco Editor'
   author      'Suguru Ochiai'
   description 'Replaces the default Redmine text editor with Monaco Editor (VS Code engine) with Markdown syntax highlighting and side-by-side preview.'
-  version     '0.8.4'
+  version     '0.8.5'
   url         'https://github.com/ochipin/redmine_monaco_editor'
   author_url  'https://github.com/ochipin/'
   requires_redmine version_or_higher: '6.0.0'
@@ -104,14 +105,14 @@ module RedmineMonacoEditor
       # ユーザーのMonaco設定（将来のtheme/font_size含む）をJSへ渡す。
       prefs = RedmineMonacoEditor::Settings.for_user(user)
 
-      # 説明欄の変更履歴を組み立てる(issueの編集/表示系画面のみ)。
+      # 説明欄/Wiki本文の変更履歴を組み立てる(issue・wikiの該当画面のみ)。
       # ツールバーの「変更履歴」ドロップダウンで使う。
       # 失敗してもページ描画を止めないように例外を握りつぶす。
       diff_data = nil
       begin
-        diff_data = build_description_diff(context)
+        diff_data = build_history_diff(context)
       rescue => e
-        Rails.logger.error "[redmine_monaco_editor] description diff build failed: #{e.class}: #{e.message}"
+        Rails.logger.error "[redmine_monaco_editor] history diff build failed: #{e.class}: #{e.message}"
       end
       diff_assign =
         if diff_data
@@ -138,15 +139,22 @@ module RedmineMonacoEditor
     end
 
     # ============================================================
-    # 説明欄の変更履歴(diff)データを組み立てる（issue編集/表示系のみ）
+    # 変更履歴(diff)データを組み立てる（issue説明欄 / Wiki本文）
     # ============================================================
     # view_layouts_base_html_head は全ページ共通で呼ばれるため、
-    # 「issueの表示・新規・編集系の画面」に限定してデータを作る。
-    # それ以外（一覧、設定、wiki等）では nil を返し、何も埋め込まない。
+    # 「履歴を出したい画面」に限定してデータを作る。それ以外（一覧、
+    # 設定画面など）では nil を返し、何も埋め込まない。
     #
-    # Redmine の編集ボタンは別ページに遷移せず issues#show 画面内で
-    # インライン編集フォームを展開するため、show も対象に含める。
-    def build_description_diff(context)
+    # 対象:
+    #   - issues#show/new/create/edit/update … 説明欄(#issue_description)
+    #       Redmine の編集ボタンは別ページに遷移せず show 画面内でインライン
+    #       編集フォームを展開するため、show も対象に含める。
+    #   - wiki#edit/update           … Wiki本文(#content_text)
+    #       update はバリデーションエラー時に edit フォームを再描画するため含める。
+    #
+    # 出力するJSONの形は issue/wiki で同一(owner_selector だけ異なる)なので、
+    # フロント側は両者を区別せず同じコードで処理できる。
+    def build_history_diff(context)
       controller = context[:controller]
       return nil if controller.nil?
 
@@ -156,14 +164,19 @@ module RedmineMonacoEditor
       ctrl = params[:controller].to_s
       action = params[:action].to_s
 
-      target =
-        (ctrl == 'issues' && %w[show new create edit update].include?(action))
-      return nil unless target
+      if ctrl == 'issues' && %w[show new create edit update].include?(action)
+        issue = controller.instance_variable_get(:@issue)
+        return nil if issue.nil?
+        return RedmineMonacoEditor::DescriptionHistory.build(issue)
+      end
 
-      issue = controller.instance_variable_get(:@issue)
-      return nil if issue.nil?
+      if ctrl == 'wiki' && %w[edit update].include?(action)
+        page = controller.instance_variable_get(:@page)
+        return nil if page.nil?
+        return RedmineMonacoEditor::WikiHistory.build(page)
+      end
 
-      RedmineMonacoEditor::DescriptionHistory.build(issue)
+      nil
     end
 
     # ============================================================

@@ -4707,20 +4707,25 @@
     function computeJournalSummary(meta) {
       if (!DIFF || !DIFF.versions) return null;
       var versions = DIFF.versions;
-      // meta.journal_id が版番号を引くキー。current の場合は meta.journal_id
-      // が current_meta の journal_id と一致する。
+      // 版を一意に引くキーは meta.index を使う。
+      //   - チケット説明欄: index=注記番号(creation は 0)
+      //   - Wikiページ本文: index=version番号(1始まり、0は無い)
+      // 以前は journal_id をキーにしていたが、Wiki には journal が無く
+      // journal_id が常に null になるため、null 同士が誤って最古版に
+      // マッチして要約が出せなくなる不具合があった。index は両方で
+      // 版ごとにユニークなため、共通キーとして安全に使える。
       var foundIdx = -1;
       var isCurrent = false;
-      if (DIFF.current_meta && DIFF.current_meta.journal_id != null
-        && meta.journal_id === DIFF.current_meta.journal_id) {
+      if (DIFF.current_meta && DIFF.current_meta.index != null
+        && meta.index === DIFF.current_meta.index) {
         isCurrent = true;
       } else {
         for (var i = 0; i < versions.length; i++) {
-          if (versions[i].journal_id === meta.journal_id) { foundIdx = i; break; }
+          if (versions[i].index === meta.index) { foundIdx = i; break; }
         }
-        // creation(index=0) の場合は journal_id=null。要約は出せない(creation
-        // の手前が無いため)。
-        if (foundIdx === -1 && meta.journal_id == null && meta.index === 0) {
+        // creation(index=0) の場合は直前の版が無いため要約は出せない。
+        // (チケット説明欄のみ。Wiki に index=0 は存在しない)
+        if (foundIdx === -1 && meta.index === 0) {
           return null;
         }
       }
@@ -4732,13 +4737,14 @@
         afterText = DIFF.current || '';
       } else {
         if (foundIdx === -1) return null;
-        // versions[foundIdx] = この journal で作られた版自体
-        // ただし「この journal でどう変わったか」を見たいので、
+        // versions[foundIdx] = この版自体。
+        // ただし「この版で何が変わったか」を見たいので、
         // 「直前の版」と「この版」を diff する。
         var prevText;
         if (foundIdx === 0) {
-          // 最古版 = creation。直前はその前(creation 直前)が無いので、
-          // creation の text の old_value は無い。要約は省略。
+          // 最古版。直前の版が無いので要約は省略する。
+          //   - チケット: 最古版=creation の手前は無い
+          //   - Wiki: 最古版=version 1 の手前は無い
           return null;
         }
         prevText = versions[foundIdx - 1].text || '';
@@ -4768,7 +4774,10 @@
       if (!summary) return;
       if (typeof editor.__mteOpenDiff === 'function') {
         var fromLabel, toLabel;
-        if (DIFF.current_meta && meta.journal_id === DIFF.current_meta.journal_id) {
+        // 版照合は index で行う(computeJournalSummary と同じ理由。
+        // Wiki は journal_id が常に null のため index を共通キーにする)。
+        if (DIFF.current_meta && DIFF.current_meta.index != null
+          && meta.index === DIFF.current_meta.index) {
           // current。手前 = versions の最後
           if (DIFF.versions.length === 0) return;
           var prevV = DIFF.versions[DIFF.versions.length - 1];
@@ -4777,7 +4786,7 @@
         } else {
           var foundIdx = -1;
           for (var i = 0; i < DIFF.versions.length; i++) {
-            if (DIFF.versions[i].journal_id === meta.journal_id) { foundIdx = i; break; }
+            if (DIFF.versions[i].index === meta.index) { foundIdx = i; break; }
           }
           if (foundIdx <= 0) return;
           fromLabel = formatVersionLabelShort(DIFF.versions[foundIdx - 1]);

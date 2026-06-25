@@ -110,7 +110,7 @@ ja:
 
     # 変更履歴(diff)ドロップダウン
     history_btn: "変更履歴"
-    history_btn_tip: "過去の説明欄の差分を表示"
+    history_btn_tip: "過去の版の差分を表示"
     history_dropdown_title: "比較する差分を選択"
     history_to_next: "次の版"
     history_to_current: "現在"
