@@ -3863,6 +3863,30 @@
       window.monaco.KeyMod.CtrlCmd | window.monaco.KeyCode.KeyI,
       function () { applyWrap('italic'); }
     );
+
+    // Ctrl+Enter / Ctrl+S でフォームを送信（Redmine標準の挙動を再現）
+    var submitForm = function () {
+      var form = textarea.closest('form');
+      if (form) {
+        // Monacoの最新値を確実にtextareaへ反映してから送信
+        textarea.value = editor.getValue();
+        // RedmineのjsToolBarが発火させるカスタムイベント等を考慮して requestSubmit を優先
+        if (typeof form.requestSubmit === 'function') {
+          form.requestSubmit();
+        } else {
+          form.submit();
+        }
+      }
+    };
+
+    editor.addCommand(
+      window.monaco.KeyMod.CtrlCmd | window.monaco.KeyCode.Enter,
+      submitForm
+    );
+    editor.addCommand(
+      window.monaco.KeyMod.CtrlCmd | window.monaco.KeyCode.KeyS,
+      submitForm
+    );
   }
   // ============================================================
   // 表グリッド選択ピッカー
@@ -6597,20 +6621,113 @@
     var ctx = focusedPasteEditor();
     if (!ctx) { return; }
 
-    // 添付フォームが無い画面（プロジェクト説明/ウェルカムメッセージ等）では
-    // クリップボード画像ペーストを無効化する。preventDefault もしないので、
-    // 通常のペースト挙動を妨げない。
-    if (!hasAttachmentTarget(ctx)) { return; }
-
-    var images = collectClipboardImages(cd);
-    if (images.length === 0) { return; } // テキスト等はMonacoの通常処理に任せる
-
-    for (var i = 0; i < images.length; i++) {
-      processClipboardImage(ctx, images[i]);
+    // 1. 画像の処理（添付可能な画面のみ）
+    if (hasAttachmentTarget(ctx)) {
+      var images = collectClipboardImages(cd);
+      if (images.length > 0) {
+        for (var i = 0; i < images.length; i++) {
+          processClipboardImage(ctx, images[i]);
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
     }
-    // 画像がMonacoにテキストとして貼られるのを防ぐ。
-    e.preventDefault();
-    e.stopPropagation();
+
+    var html = cd.getData('text/html');
+    if (html) {
+      // プレーンテキストのTSVよりも、HTMLのテーブル構造を使った方が
+      // セル内改行やエスケープ処理を正確に行える。
+      var temp = document.createElement('div');
+      temp.innerHTML = html.replace(/\r?\n/g, '');
+
+      var tables = temp.querySelectorAll('table');
+      // ペースト内容が単一のテーブルのみで構成されているかチェック
+      if (tables.length === 1) {
+        var clone = temp.cloneNode(true);
+        // メタデータ等を無視して、テーブル以外のテキストが残っていないか確認
+        clone.querySelectorAll('meta, style, link, title, table').forEach(function(el) { el.remove(); });
+        
+        if (clone.textContent.trim() === '') {
+          var table = tables[0];
+          var rows = [];
+
+          // DOMから行とセルを抽出
+          table.querySelectorAll('tr').forEach(function(tr) {
+            var cells = [];
+            tr.querySelectorAll('td, th').forEach(function(cell) {
+              var cellClone = cell.cloneNode(true);
+              // セル内の <br> を一旦 \n に変換して保持
+              cellClone.querySelectorAll('br').forEach(function(br) {
+                br.replaceWith('\n');
+              });
+              cells.push(cellClone.textContent.trim());
+            });
+            if (cells.length > 0) { rows.push(cells); }
+          });
+
+          // 2行2列以上あるかチェック
+          if (rows.length >= 2) {
+            var maxColumns = 0;
+            rows.forEach(function(row) { maxColumns = Math.max(maxColumns, row.length); });
+            
+            if (maxColumns >= 2) {
+              // 足りない列を空文字で埋める
+              rows.forEach(function(row) {
+                while (row.length < maxColumns) { row.push(''); }
+              });
+
+              var tableLines = [];
+              
+              if (ctx.fmt === 'textile') {
+                // Textileフォーマット
+                var tFormatCell = function(c) { return c.replace(/\|/g, '&#124;'); };
+                var headCells = rows[0].map(tFormatCell);
+                tableLines.push('|_. ' + headCells.join(' |_. ') + ' |');
+                
+                for (var r = 1; r < rows.length; r++) {
+                  var rowCells = rows[r].map(tFormatCell);
+                  tableLines.push('| ' + rowCells.join(' | ') + ' |');
+                }
+              } else {
+                // Markdownフォーマット
+                var mFormatCell = function(c) { 
+                  return c.replace(/\|/g, '\\|').replace(/\n/g, '<br>'); 
+                };
+                var headCells = rows[0].map(mFormatCell);
+                tableLines.push('| ' + headCells.join(' | ') + ' |');
+                
+                var separator = rows[0].map(function() { return '--'; });
+                tableLines.push('| ' + separator.join(' | ') + ' |');
+                
+                for (var r = 1; r < rows.length; r++) {
+                  var rowCells = rows[r].map(mFormatCell);
+                  tableLines.push('| ' + rowCells.join(' | ') + ' |');
+                }
+              }
+
+              var insertText = tableLines.join('\n') + '\n\n';
+              var editor = ctx.editor;
+              var sel = editor.getSelection();
+              
+              editor.executeEdits('paste-html-table', [{
+                range: sel,
+                text: insertText,
+                forceMoveMarkers: true
+              }]);
+              
+              editor.focus();
+              e.preventDefault();
+              e.stopPropagation();
+              return;
+            }
+          }
+        }
+      }
+    }
+
+    // 3. 上記に該当しない（画像でも表でもない）場合はMonacoの通常ペーストに任せる
+  }
   }
 
   function setupClipboardImagePaste(editor, textarea, fmt) {
