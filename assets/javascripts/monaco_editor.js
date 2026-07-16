@@ -1999,18 +1999,11 @@
     btnSplit.innerHTML = ICON_SPLIT + ' ' + escapeHtml(t('mode_split', 'Split'));
     btnSplit.title = t('mode_split_tip', 'Editor + preview (side by side)');
 
-    // 縦分割ボタン（上下・アイコンのみ）
-    var btnSplitV = document.createElement('button');
-    btnSplitV.type = 'button';
-    btnSplitV.className = 'monaco-preview-btn monaco-icon-only';
-    btnSplitV.innerHTML = ICON_SPLIT_V;
-    btnSplitV.title = t('mode_split_v_tip', 'Editor + preview (stacked)');
-
-    // プレビューボタン（アイコンのみ）
+    // プレビューボタン（アイコン+テキスト）
     var btnPreview = document.createElement('button');
     btnPreview.type = 'button';
-    btnPreview.className = 'monaco-preview-btn monaco-icon-only';
-    btnPreview.innerHTML = ICON_PREVIEW;
+    btnPreview.className = 'monaco-preview-btn';
+    btnPreview.innerHTML = ICON_PREVIEW + ' ' + escapeHtml(t('mode_preview', 'Preview'));
     btnPreview.title = t('mode_preview_tip', 'Show preview only');
 
     // アウトライン トグルボタン（アイコンのみ）
@@ -2033,7 +2026,6 @@
     // 順序: 編集・分割・縦分割・プレビュー・アウトライン・変更履歴
     modeGroup.appendChild(btnEdit);
     modeGroup.appendChild(btnSplit);
-    modeGroup.appendChild(btnSplitV);
     modeGroup.appendChild(btnPreview);
     modeGroup.appendChild(btnOutline);
     modeGroup.appendChild(btnHistory);
@@ -2410,6 +2402,7 @@
     // payload = { fromText, toText, fromLabel, toLabel } を受ける。
     // teardownDiff() で完全に元の状態へ戻す。
     var diffState = null; // { container, leftEditor, rightEditor, closeBtn, ... }
+    var currentMode = 'edit'; // 現在のモードを保持する変数
 
     function teardownDiff() {
       if (!diffState) return;
@@ -2434,15 +2427,23 @@
       // diff モードを終了するため、別モードに移る時は必ず teardown する
       if (diffState && mode !== 'diff') teardownDiff();
 
+      currentMode = mode;
+      // diff モード以外はブラウザ(localStorage)に状態を保存
+      if (mode !== 'diff') {
+        localStorage.setItem('monaco_editor_mode', mode);
+      }
+
       body.classList.remove('split-view', 'split-vertical', 'preview-only', 'diff-mode');
       btnEdit.classList.remove('active');
       btnSplit.classList.remove('active');
-      btnSplitV.classList.remove('active');
       btnPreview.classList.remove('active');
 
       // スプリッターのドラッグで付いたインライン値をリセット（CSS既定の50:50に戻す）
       editorContainer.style.flex = '';
       previewPane.style.flex = '';
+
+      // 分割ボタンの表示をいったんデフォルト（左右分割アイコン）にリセット
+      btnSplit.innerHTML = ICON_SPLIT + ' ' + escapeHtml(t('mode_split', 'Split'));
 
       if (mode === 'split') {
         body.classList.add('split-view');
@@ -2450,7 +2451,9 @@
         updatePreview();
       } else if (mode === 'split-v') {
         body.classList.add('split-view', 'split-vertical');
-        btnSplitV.classList.add('active');
+        btnSplit.classList.add('active');
+        // 縦分割時はボタンのアイコンを縦分割用のものに差し替える
+        btnSplit.innerHTML = ICON_SPLIT_V + ' ' + escapeHtml(t('mode_split', 'Split'));
         updatePreview();
       } else if (mode === 'preview') {
         body.classList.add('preview-only');
@@ -2775,8 +2778,18 @@
     }
 
     btnEdit.addEventListener('click', function () { setMode('edit'); });
-    btnSplit.addEventListener('click', function () { setMode('split'); });
-    btnSplitV.addEventListener('click', function () { setMode('split-v'); });
+
+    // 左右分割ボタンのサイクル処理 (Split → Split-V → Edit)
+    btnSplit.addEventListener('click', function () {
+      if (currentMode === 'split') {
+        setMode('split-v');
+      } else if (currentMode === 'split-v') {
+        setMode('edit');
+      } else {
+        setMode('split');
+      }
+    });
+
     btnPreview.addEventListener('click', function () { setMode('preview'); });
 
     // 外部(setupHistoryDropdown 等)から diff モードへ切り替えるための公開フック。
@@ -2824,10 +2837,13 @@
     setupHistoryDropdown(btnHistory, editor, textarea);
 
     // カーソル行に「著者・日付・#注記」をうっすら表示する Blame ヒント。
-    // 履歴データが無ければ何もしない。
     setupBlameHint(editor, textarea);
-  }
 
+    // 初期化の最後に、前回保存されたモードを復元する（なければ 'edit'）
+    var savedMode = localStorage.getItem('monaco_editor_mode') || 'edit';
+    setMode(savedMode);
+  }
+  // ^ replaceTextarea の閉じカッコ
   // ============================================================
   // @メンションの確定処理＆ツールチップ
   function setupMention(editor, monacoInstance) {
