@@ -6744,7 +6744,6 @@
 
     // 3. 上記に該当しない（画像でも表でもない）場合はMonacoの通常ペーストに任せる
   }
-  }
 
   function setupClipboardImagePaste(editor, textarea, fmt) {
     var node = editor.getDomNode();
