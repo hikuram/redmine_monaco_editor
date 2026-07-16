@@ -69,6 +69,105 @@
     return v;
   }
 
+
+
+  // ============================================================
+  // UI状態のローカル記憶（表示モード・分割方向・分割比率）
+  // ============================================================
+  // サーバ側のユーザー設定を増やさず、ブラウザ単位で編集体験を復元する。
+  // localStorage が無効な環境でもエディタ自体は動くよう、読み書きは全て握りつぶす。
+  var UI_PREFS_KEY = 'redmine_monaco_editor.uiPrefs.v1';
+  var LEGACY_MODE_KEY = 'monaco_editor_mode';
+
+  function defaultUiPrefs() {
+    return {
+      lastMode: 'edit',
+      lastSplitMode: 'split',
+      splitRatio: {
+        split: 0.5,
+        splitV: 0.5
+      }
+    };
+  }
+
+  function safeLocalStorageGet(key) {
+    try { return window.localStorage.getItem(key); } catch (e) { return null; }
+  }
+
+  function safeLocalStorageSet(key, value) {
+    try { window.localStorage.setItem(key, value); } catch (e) { /* ignore */ }
+  }
+
+  function clampRatio(value, fallback) {
+    var n = parseFloat(value);
+    if (isNaN(n)) { n = fallback; }
+    return Math.max(0.1, Math.min(0.9, n));
+  }
+
+  function normalizeMode(mode) {
+    return ['edit', 'split', 'split-v', 'preview'].indexOf(mode) !== -1 ? mode : 'edit';
+  }
+
+  function normalizeSplitMode(mode) {
+    return mode === 'split-v' ? 'split-v' : 'split';
+  }
+
+  function readUiPrefs() {
+    var prefs = defaultUiPrefs();
+    var raw = safeLocalStorageGet(UI_PREFS_KEY);
+
+    if (raw) {
+      try {
+        var parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          prefs.lastMode = normalizeMode(parsed.lastMode || prefs.lastMode);
+          prefs.lastSplitMode = normalizeSplitMode(parsed.lastSplitMode || prefs.lastSplitMode);
+          if (parsed.splitRatio && typeof parsed.splitRatio === 'object') {
+            prefs.splitRatio.split = clampRatio(parsed.splitRatio.split, prefs.splitRatio.split);
+            prefs.splitRatio.splitV = clampRatio(parsed.splitRatio.splitV, prefs.splitRatio.splitV);
+          }
+        }
+      } catch (e) { /* ignore invalid JSON */ }
+    } else {
+      // 旧バージョンの単一キーから一度だけ自然移行する。
+      var legacyMode = safeLocalStorageGet(LEGACY_MODE_KEY);
+      if (legacyMode) {
+        prefs.lastMode = normalizeMode(legacyMode);
+        if (prefs.lastMode === 'split' || prefs.lastMode === 'split-v') {
+          prefs.lastSplitMode = prefs.lastMode;
+        }
+      }
+    }
+
+    return prefs;
+  }
+
+  function writeUiPrefs(prefs) {
+    if (!prefs || typeof prefs !== 'object') { return; }
+    prefs.lastMode = normalizeMode(prefs.lastMode);
+    prefs.lastSplitMode = normalizeSplitMode(prefs.lastSplitMode);
+    prefs.splitRatio = prefs.splitRatio || {};
+    prefs.splitRatio.split = clampRatio(prefs.splitRatio.split, 0.5);
+    prefs.splitRatio.splitV = clampRatio(prefs.splitRatio.splitV, 0.5);
+    safeLocalStorageSet(UI_PREFS_KEY, JSON.stringify(prefs));
+    // 後方互換・手動確認用として旧キーも更新する。
+    safeLocalStorageSet(LEGACY_MODE_KEY, prefs.lastMode);
+  }
+
+  function ratioKeyForMode(mode) {
+    return mode === 'split-v' ? 'splitV' : 'split';
+  }
+
+  function applySplitRatio(mode, editorContainer, previewPane) {
+    var prefs = readUiPrefs();
+    var ratio = prefs.splitRatio[ratioKeyForMode(mode)];
+    ratio = clampRatio(ratio, 0.5);
+    var pct = (ratio * 100).toFixed(1);
+    var rest = (100 - ratio * 100).toFixed(1);
+    editorContainer.style.flex = '0 0 ' + pct + '%';
+    previewPane.style.flex = '0 0 ' + rest + '%';
+  }
+
   // ============================================================
   // Monaco ローダー（public直下に配置したvsを参照）
   // ============================================================
@@ -698,6 +797,16 @@
       });
   }
 
+
+
+  function hasMacroNamed(name) {
+    if (!macroListCache || macroListCache.length === 0) { return false; }
+    var key = String(name || '').toLowerCase();
+    return macroListCache.some(function (macro) {
+      return macro && String(macro.name || '').toLowerCase() === key;
+    });
+  }
+
   // ============================================================
   // DMSF文書一覧のキャッシュと先読み（{{dmsf(id)}} 引数補完用）
   // ============================================================
@@ -929,11 +1038,6 @@
     prefetchMacros();
     // {{dmsf( 引数補完のためのDMSF文書一覧も先読みする。
     prefetchDmsfFiles();
-    // Prefetch the badge key list for {{badge( argument completion.
-    // When redmine_starside is absent this becomes an empty array, so
-    // completion just does not appear (harmless).
-    prefetchBadges();
-
     // markdown / textile 両方で効かせる。
     ['markdown', 'textile'].forEach(function (lang) {
       monacoInstance.languages.registerCompletionItemProvider(lang, {
@@ -968,6 +1072,11 @@
           // Inside {{badge( parentheses, show badge key completion.
           //   When pm[2] is empty (right after {{badge() show nothing; filter after 1 char.
           if (pm && BADGE_ARG_MACROS.indexOf(pm[1].toLowerCase()) !== -1) {
+            // redmine_starside 未導入時に /starside/badges へ毎回404を出さない。
+            // まず Redmine の available_macros に badge が存在することを確認してから
+            // その引数候補だけを遅延取得する。
+            if (!hasMacroNamed(pm[1])) { return { suggestions: [] }; }
+            prefetchBadges();
             return provideBadgeArg(model, position, pm[2]);
           }
 
@@ -2430,7 +2539,12 @@
       currentMode = mode;
       // diff モード以外はブラウザ(localStorage)に状態を保存
       if (mode !== 'diff') {
-        localStorage.setItem('monaco_editor_mode', mode);
+        var prefs = readUiPrefs();
+        prefs.lastMode = normalizeMode(mode);
+        if (mode === 'split' || mode === 'split-v') {
+          prefs.lastSplitMode = mode;
+        }
+        writeUiPrefs(prefs);
       }
 
       body.classList.remove('split-view', 'split-vertical', 'preview-only', 'diff-mode');
@@ -2438,7 +2552,8 @@
       btnSplit.classList.remove('active');
       btnPreview.classList.remove('active');
 
-      // スプリッターのドラッグで付いたインライン値をリセット（CSS既定の50:50に戻す）
+      // split以外へ戻る時はインライン値をリセット。
+      // split/split-vでは保存済み比率を後で復元する。
       editorContainer.style.flex = '';
       previewPane.style.flex = '';
 
@@ -2448,12 +2563,14 @@
       if (mode === 'split') {
         body.classList.add('split-view');
         btnSplit.classList.add('active');
+        applySplitRatio('split', editorContainer, previewPane);
         updatePreview();
       } else if (mode === 'split-v') {
         body.classList.add('split-view', 'split-vertical');
         btnSplit.classList.add('active');
         // 縦分割時はボタンのアイコンを縦分割用のものに差し替える
         btnSplit.innerHTML = ICON_SPLIT_V + ' ' + escapeHtml(t('mode_split', 'Split'));
+        applySplitRatio('split-v', editorContainer, previewPane);
         updatePreview();
       } else if (mode === 'preview') {
         body.classList.add('preview-only');
@@ -2779,14 +2896,16 @@
 
     btnEdit.addEventListener('click', function () { setMode('edit'); });
 
-    // 左右分割ボタンのサイクル処理 (Split → Split-V → Edit)
+    // 分割ボタンのサイクル処理。
+    // split中は左右<->上下をトグルし、edit/previewからは最後の分割方向へ戻す。
     btnSplit.addEventListener('click', function () {
       if (currentMode === 'split') {
         setMode('split-v');
       } else if (currentMode === 'split-v') {
-        setMode('edit');
-      } else {
         setMode('split');
+      } else {
+        var prefs = readUiPrefs();
+        setMode(normalizeSplitMode(prefs.lastSplitMode));
       }
     });
 
@@ -2808,7 +2927,15 @@
     addVerticalResizer(wrapper, editor);
 
     // 分割スプリッター（ペイン境界のドラッグ）を追加
-    addSplitter(splitter, paneWrap, editorContainer, previewPane, editor);
+    addSplitter(splitter, paneWrap, editorContainer, previewPane, editor, function (mode, ratio) {
+      var prefs = readUiPrefs();
+      var key = ratioKeyForMode(mode);
+      prefs.splitRatio[key] = clampRatio(ratio, 0.5);
+      if (mode === 'split' || mode === 'split-v') {
+        prefs.lastSplitMode = mode;
+      }
+      writeUiPrefs(prefs);
+    });
 
     // #1010 キャレット連動ツールチップをセットアップ
     setupCaretTooltip(editor, monacoInstance);
@@ -2839,8 +2966,9 @@
     // カーソル行に「著者・日付・#注記」をうっすら表示する Blame ヒント。
     setupBlameHint(editor, textarea);
 
-    // 初期化の最後に、前回保存されたモードを復元する（なければ 'edit'）
-    var savedMode = localStorage.getItem('monaco_editor_mode') || 'edit';
+    // 初期化の最後に、前回保存されたモードを復元する（なければ 'edit'）。
+    // 旧キー monaco_editor_mode からの移行は readUiPrefs() 内で行う。
+    var savedMode = readUiPrefs().lastMode || 'edit';
     setMode(savedMode);
   }
   // ^ replaceTextarea の閉じカッコ
@@ -3348,8 +3476,9 @@
   // ============================================================
   // 左右分割: 横方向にドラッグ → 各ペインの幅(flex-basis)を変更
   // 縦分割  : 縦方向にドラッグ → 各ペインの高さ(flex-basis)を変更
-  function addSplitter(splitter, measureEl, editorContainer, previewPane, editor) {
+  function addSplitter(splitter, measureEl, editorContainer, previewPane, editor, onRatioChange) {
     var dragging = false;
+    var lastRatio = null;
 
     // 分割方向の判定は body のクラスを見る必要があるため、
     // measureEl（paneWrap）から親を辿って .monaco-editor-body を取得する。
@@ -3386,6 +3515,7 @@
 
       // 10%〜90%の範囲に制限
       ratio = Math.max(0.1, Math.min(0.9, ratio));
+      lastRatio = ratio;
 
       var pct = (ratio * 100).toFixed(1);
       var rest = (100 - ratio * 100).toFixed(1);
@@ -3400,6 +3530,11 @@
       dragging = false;
       document.body.style.userSelect = '';
       document.body.style.cursor = '';
+      if (lastRatio !== null && typeof onRatioChange === 'function') {
+        var bodyMode = bodyEl.classList.contains('split-vertical') ? 'split-v' : 'split';
+        onRatioChange(bodyMode, lastRatio);
+      }
+      lastRatio = null;
       editor.layout();
     }
 
@@ -6644,6 +6779,136 @@
     return !!form.querySelector('input[type=file].filedrop');
   }
 
+  // 行列データをRedmine記法の表へ変換する。
+  // 1行目をヘッダーとして扱い、Markdown/Textileのどちらにも対応する。
+  function tableRowsToMarkup(rows, fmt) {
+    if (!rows || rows.length < 2) { return null; }
+
+    var maxColumns = 0;
+    rows.forEach(function (row) {
+      if (row && row.length > maxColumns) { maxColumns = row.length; }
+    });
+    if (maxColumns < 2) { return null; }
+
+    rows = rows.map(function (row) {
+      var out = (row || []).slice();
+      while (out.length < maxColumns) { out.push(''); }
+      return out;
+    });
+
+    var tableLines = [];
+
+    if (fmt === 'textile') {
+      var tFormatCell = function (c) {
+        return String(c || '').trim().replace(/\|/g, '&#124;').replace(/\r?\n/g, '<br>');
+      };
+      var tHeadCells = rows[0].map(tFormatCell);
+      tableLines.push('|_. ' + tHeadCells.join(' |_. ') + ' |');
+
+      for (var tr = 1; tr < rows.length; tr++) {
+        var tRowCells = rows[tr].map(tFormatCell);
+        tableLines.push('| ' + tRowCells.join(' | ') + ' |');
+      }
+    } else {
+      var mFormatCell = function (c) {
+        return String(c || '').trim().replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>');
+      };
+      var mHeadCells = rows[0].map(mFormatCell);
+      tableLines.push('| ' + mHeadCells.join(' | ') + ' |');
+
+      var separator = rows[0].map(function () { return '---'; });
+      tableLines.push('| ' + separator.join(' | ') + ' |');
+
+      for (var mr = 1; mr < rows.length; mr++) {
+        var mRowCells = rows[mr].map(mFormatCell);
+        tableLines.push('| ' + mRowCells.join(' | ') + ' |');
+      }
+    }
+
+    return tableLines.join('\n') + '\n\n';
+  }
+
+  // text/plain だけのTSV貼り付けを表として解釈する。
+  // Excel/LibreOffice/ブラウザ表は text/html も持つことが多いが、
+  // エディタやツールによっては text/plain のタブ区切りだけになるため、
+  // HTML表変換に該当しなかった場合のフォールバックとして使う。
+  function parseTsvRows(text) {
+    if (!text || text.indexOf('\t') === -1) { return null; }
+
+    text = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    var rows = [];
+    var row = [];
+    var cell = '';
+    var inQuotes = false;
+
+    for (var i = 0; i < text.length; i++) {
+      var ch = text.charAt(i);
+
+      if (inQuotes) {
+        if (ch === '"') {
+          if (text.charAt(i + 1) === '"') {
+            cell += '"';
+            i++;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          cell += ch;
+        }
+        continue;
+      }
+
+      if (ch === '"' && cell === '') {
+        inQuotes = true;
+      } else if (ch === '\t') {
+        row.push(cell);
+        cell = '';
+      } else if (ch === '\n') {
+        row.push(cell);
+        rows.push(row);
+        row = [];
+        cell = '';
+      } else {
+        cell += ch;
+      }
+    }
+
+    if (row.length > 0 || cell.length > 0) {
+      row.push(cell);
+      rows.push(row);
+    }
+
+    // 末尾の空行だけを落とす。途中の空行は表の空行として残す。
+    while (rows.length > 0) {
+      var last = rows[rows.length - 1];
+      var empty = !last || last.every(function (c) { return String(c || '').trim() === ''; });
+      if (!empty) { break; }
+      rows.pop();
+    }
+
+    if (rows.length < 2) { return null; }
+
+    var maxColumns = 0;
+    rows.forEach(function (r) { if (r && r.length > maxColumns) { maxColumns = r.length; } });
+    if (maxColumns < 2) { return null; }
+
+    return rows;
+  }
+
+  function insertTableMarkup(editor, text, source) {
+    if (!text) { return false; }
+    var sel = editor.getSelection();
+    if (!sel) { return false; }
+    editor.executeEdits(source || 'paste-table', [{
+      range: sel,
+      text: text,
+      forceMoveMarkers: true
+    }]);
+    editor.focus();
+    return true;
+  }
+
   // document レベルの paste ハンドラ（ページに1つだけ設置）。
   function onDocumentPaste(e) {
     var cd = e.clipboardData || (e.originalEvent && e.originalEvent.clipboardData);
@@ -6758,7 +7023,20 @@
       }
     }
 
-    // 3. 上記に該当しない（画像でも表でもない）場合はMonacoの通常ペーストに任せる
+    // 3. text/plain のTSVだけが来る場合も、Markdown/Textile表へ変換する。
+    // HTML表が使える場合は上の処理でreturnしているため、ここはフォールバック。
+    var plain = cd.getData('text/plain');
+    var tsvRows = parseTsvRows(plain);
+    if (tsvRows) {
+      var tsvTableText = tableRowsToMarkup(tsvRows, ctx.fmt);
+      if (insertTableMarkup(ctx.editor, tsvTableText, 'paste-tsv-table')) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+    }
+
+    // 4. 上記に該当しない（画像でも表でもない）場合はMonacoの通常ペーストに任せる
   }
 
   function setupClipboardImagePaste(editor, textarea, fmt) {
