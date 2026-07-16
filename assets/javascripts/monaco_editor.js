@@ -6595,15 +6595,31 @@
       console.warn('[monaco_editor] native addFile/filedrop not found; cannot upload pasted image');
     }
 
-    // 記法挿入。Textileのみ表示幅を解決して付与、それ以外は即挿入。
-    if (ctx.fmt === 'textile') {
-      resolveImageWidth(renamed).then(function (w) {
-        var widthPx = w > 0 ? Math.round(w / (window.devicePixelRatio || 1)) : 0;
-        insertMarkupAtCursor(ctx.editor, buildImageMarkup(ctx.fmt, filename, widthPx));
-      });
-    } else {
-      insertMarkupAtCursor(ctx.editor, buildImageMarkup(ctx.fmt, filename, 0));
-    }
+    resolveImageWidth(renamed).then(function (w) {
+      // 純正と同等のデバイスピクセル比(devicePixelRatio)を考慮した幅の算出
+      var widthPx = w > 0 ? Math.round(w / (window.devicePixelRatio || 1)) : 0;
+      var hasValidWidth = widthPx > 0;
+      
+      var markup = '';
+
+      if (ctx.fmt === 'textile') {
+        // Textile記法 (従来通り)
+        markup = buildImageMarkup(ctx.fmt, filename, widthPx);
+      } else {
+        // Markdown記法 (common_mark 相当)
+        // Redmineの getInlineAttachmentMarkup と同じ条件分岐を適用
+        if (hasValidWidth) {
+          // 幅が取れた場合はHTMLの img タグでサイズ指定
+          var fname = inlineFilename(filename); // 既存のヘルパーを利用
+          markup = '<img style="width: ' + widthPx + 'px;" src="' + fname + '"><br>';
+        } else {
+          // 幅が取れなければ通常のMarkdown記法
+          markup = buildImageMarkup(ctx.fmt, filename, 0);
+        }
+      }
+
+      insertMarkupAtCursor(ctx.editor, markup);
+    });
   }
 
   // 登録済みエディタのうち、今フォーカスしているものを返す。
