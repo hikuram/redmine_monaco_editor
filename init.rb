@@ -60,7 +60,7 @@ module RedmineMonacoEditor
     # 引けば済むため、JSへ渡すと無駄になる。新しい言語を足すときは
     # yml を1枚増やすだけでよく、この配列は触らない。
     I18N_KEYS = %w[
-      mode_edit mode_edit_tip mode_split mode_split_tip mode_split_v_tip
+      mode_edit mode_edit_tip mode_split mode_split_tip mode_preview
       mode_preview_tip outline_tip fullscreen_tip
       bold_tip italic_tip underline_tip strike_tip code_inline_tip
       h1_tip h2_tip h3_tip h4_tip ul_tip ol_tip blockquote_tip code_block_tip
