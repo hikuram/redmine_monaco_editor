@@ -49,13 +49,14 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px;
+  padding: 4px 44px 4px 8px;
   background: #fafafa;
   border-bottom: 1px solid #ddd;
   border-radius: 3px 3px 0 0;
   min-height: 36px;
   flex-shrink: 0;       /* bodyが伸縮してもツールバーは潰れない */
   flex-wrap: wrap;    /* 折り返す */
+  position: relative; /* 絶対配置の基準にする */
 }
 
 /* モードボタン群（左・固定幅・縮まない・隠れない） */
@@ -829,14 +830,17 @@ textarea.wiki-edit.monaco-replaced {
 /* ============================================================
    全画面トグル
    ============================================================ */
-/* 装飾群と全画面ボタンの間を押し広げ、全画面ボタンを右端へ寄せる */
+/* スペーサーは隠す */
 .monaco-toolbar-spacer {
-  flex: 1 1 auto;
-  min-width: 0;
+  display: none !important;
 }
 
-/* 全画面ボタン自体は縮まない（常に表示） */
+/* 全画面ボタンを右上に絶対配置 */
 .monaco-fullscreen-btn {
+  position: absolute;
+  top: 4px;      /* ツールバーの上端から */
+  right: 8px;    /* ツールバーの右端から */
+  z-index: 10;
   flex-shrink: 0;
 }
 
