@@ -41,7 +41,7 @@
 /* ============================================================
    単一ツールバー構造（1段）
    左: モードボタン群 (.monaco-toolbar-modes) — 固定で隠れない
-   右: 装飾ボタン群   (.monaco-decoration-toolbar) — 幅不足で右から隠れる
+   右: 装飾ボタン群   (.monaco-decoration-toolbar) — 幅不足で折り返す
    ============================================================ */
 
 /* ツールバー全体 */
@@ -55,8 +55,7 @@
   border-radius: 3px 3px 0 0;
   min-height: 36px;
   flex-shrink: 0;       /* bodyが伸縮してもツールバーは潰れない */
-  overflow: hidden;     /* 装飾ボタンが幅を超えたら隠す */
-  flex-wrap: nowrap;    /* 折り返さず1段固定 */
+  flex-wrap: wrap;    /* 折り返す */
 }
 
 /* モードボタン群（左・固定幅・縮まない・隠れない） */
@@ -67,15 +66,14 @@
   flex-shrink: 0;       /* 縮小も省略もしない */
 }
 
-/* 装飾ボタン群（右・幅が足りなければ右端から見切れる） */
+/* 装飾ボタン群（右・幅が足りなければ下の段へ折り返す） */
 .monaco-decoration-toolbar {
   display: flex;
   align-items: center;
   gap: 2px;
-  flex-wrap: nowrap;    /* 折り返さない（はみ出しは overflow:hidden で切る）*/
+  flex-wrap: wrap;      
   flex-shrink: 1;
-  min-width: 0;         /* flexアイテムが縮めるように */
-  overflow: hidden;
+  min-width: 0;
 }
 
 /* 装飾ボタン（アイコンのみ、正方形） */
