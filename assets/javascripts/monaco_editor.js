@@ -83,6 +83,7 @@
     return {
       lastMode: 'edit',
       lastSplitMode: 'split',
+      previewReturnMode: 'edit',
       splitRatio: {
         split: 0.5,
         splitV: 0.5
@@ -112,6 +113,11 @@
     return mode === 'split-v' ? 'split-v' : 'split';
   }
 
+  function previewReturnableMode(mode) {
+    if (mode === 'split' || mode === 'split-v') { return mode; }
+    return 'edit';
+  }
+
   function readUiPrefs() {
     var prefs = defaultUiPrefs();
     var raw = safeLocalStorageGet(UI_PREFS_KEY);
@@ -122,6 +128,7 @@
         if (parsed && typeof parsed === 'object') {
           prefs.lastMode = normalizeMode(parsed.lastMode || prefs.lastMode);
           prefs.lastSplitMode = normalizeSplitMode(parsed.lastSplitMode || prefs.lastSplitMode);
+          prefs.previewReturnMode = previewReturnableMode(parsed.previewReturnMode || prefs.previewReturnMode);
           if (parsed.splitRatio && typeof parsed.splitRatio === 'object') {
             prefs.splitRatio.split = clampRatio(parsed.splitRatio.split, prefs.splitRatio.split);
             prefs.splitRatio.splitV = clampRatio(parsed.splitRatio.splitV, prefs.splitRatio.splitV);
@@ -146,6 +153,7 @@
     if (!prefs || typeof prefs !== 'object') { return; }
     prefs.lastMode = normalizeMode(prefs.lastMode);
     prefs.lastSplitMode = normalizeSplitMode(prefs.lastSplitMode);
+    prefs.previewReturnMode = previewReturnableMode(prefs.previewReturnMode);
     prefs.splitRatio = prefs.splitRatio || {};
     prefs.splitRatio.split = clampRatio(prefs.splitRatio.split, 0.5);
     prefs.splitRatio.splitV = clampRatio(prefs.splitRatio.splitV, 0.5);
@@ -2113,7 +2121,7 @@
     btnPreview.type = 'button';
     btnPreview.className = 'monaco-preview-btn';
     btnPreview.innerHTML = ICON_PREVIEW + ' ' + escapeHtml(t('mode_preview', 'Preview'));
-    btnPreview.title = t('mode_preview_tip', 'Show preview only');
+    btnPreview.title = t('mode_preview_tip', 'Show preview only') + ' (Ctrl/Cmd+Shift+P)';
 
     // アウトライン トグルボタン（アイコンのみ）
     var btnOutline = document.createElement('button');
@@ -2512,6 +2520,26 @@
     // teardownDiff() で完全に元の状態へ戻す。
     var diffState = null; // { container, leftEditor, rightEditor, closeBtn, ... }
     var currentMode = 'edit'; // 現在のモードを保持する変数
+    // Previewだけの表示へ切り替える前のモード。
+    // Ctrl/Cmd+Shift+P や Previewボタンで preview <-> 元の編集モードを
+    // 往復できるようにする。
+    var previewReturnMode = 'edit';
+
+    function togglePreviewMode() {
+      // diff表示は履歴確認用の一時モードなので、Previewショートカットでは
+      // 無理に抜けない。閉じる操作は既存のdiff UI/ESCに任せる。
+      if (currentMode === 'diff') { return; }
+
+      if (currentMode === 'preview') {
+        setMode(previewReturnMode || 'edit');
+      } else {
+        previewReturnMode = previewReturnableMode(currentMode);
+        var prefs = readUiPrefs();
+        prefs.previewReturnMode = previewReturnMode;
+        writeUiPrefs(prefs);
+        setMode('preview');
+      }
+    }
 
     function teardownDiff() {
       if (!diffState) return;
@@ -2543,6 +2571,9 @@
         prefs.lastMode = normalizeMode(mode);
         if (mode === 'split' || mode === 'split-v') {
           prefs.lastSplitMode = mode;
+          prefs.previewReturnMode = mode;
+        } else if (mode === 'edit') {
+          prefs.previewReturnMode = 'edit';
         }
         writeUiPrefs(prefs);
       }
@@ -2909,7 +2940,7 @@
       }
     });
 
-    btnPreview.addEventListener('click', function () { setMode('preview'); });
+    btnPreview.addEventListener('click', togglePreviewMode);
 
     // 外部(setupHistoryDropdown 等)から diff モードへ切り替えるための公開フック。
     editor.__mteOpenDiff = function (payload) { setMode('diff', payload); };
@@ -2968,7 +2999,11 @@
 
     // 初期化の最後に、前回保存されたモードを復元する（なければ 'edit'）。
     // 旧キー monaco_editor_mode からの移行は readUiPrefs() 内で行う。
-    var savedMode = readUiPrefs().lastMode || 'edit';
+    var savedPrefs = readUiPrefs();
+    var savedMode = savedPrefs.lastMode || 'edit';
+    // 前回previewで終えた場合でも、ショートカットで自然に編集へ戻れるようにする。
+    // split系で終えていた場合はその方向へ戻す。
+    previewReturnMode = (savedMode === 'preview') ? previewReturnableMode(savedPrefs.previewReturnMode) : previewReturnableMode(savedMode);
     setMode(savedMode);
   }
   // ^ replaceTextarea の閉じカッコ
@@ -4013,6 +4048,12 @@
     editor.addCommand(
       window.monaco.KeyMod.CtrlCmd | window.monaco.KeyCode.KeyI,
       function () { applyWrap('italic'); }
+    );
+
+    // Ctrl/Cmd+Shift+P でプレビュー表示を切り替える（Redmine標準の挙動を再現）
+    editor.addCommand(
+      window.monaco.KeyMod.CtrlCmd | window.monaco.KeyMod.Shift | window.monaco.KeyCode.KeyP,
+      togglePreviewMode
     );
 
     // Ctrl+Enter / Ctrl+S でフォームを送信（Redmine標準の挙動を再現）
