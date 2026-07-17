@@ -2984,7 +2984,7 @@
     // decoBtns は { bold: <button>, italic: <button>, ... } のマップ。
     // setupDecoToolbar はこのキーで各ボタンにハンドラを結線する。
     // wrapper は表ビルダーのオーバーレイパネルの配置先として渡す。
-    setupDecoToolbar(editor, decoBtns, textarea, wrapper);
+    setupDecoToolbar(editor, decoBtns, textarea, wrapper, togglePreviewMode);
 
     // 編集差分マーカー: 開いた時点の本文を基準に、編集中の
     // 追加(緑)・変更(青)・削除(赤三角)を gutter に出す。
@@ -3787,7 +3787,7 @@
   // ============================================================
   // 選択テキストがあれば「囲む」、なければカーソル位置に挿入する。
   // 行頭系（見出し・リスト・引用・コードブロック）は選択行全体を変換する。
-  function setupDecoToolbar(editor, btns, textarea, wrapper) {
+  function setupDecoToolbar(editor, btns, textarea, wrapper, togglePreviewMode) {
     // このエディタのフォーマットに対応した記法テーブル
     var fmt = detectFormat(textarea);
     var syntax = syntaxFor(fmt);
