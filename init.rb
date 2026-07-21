@@ -5,9 +5,9 @@ require_relative 'lib/redmine_monaco_editor/wiki_history'
 
 Redmine::Plugin.register :redmine_monaco_editor do
   name        'Redmine Monaco Editor'
-  author      'Suguru Ochiai'
+  author      'Suguru Ochiai, customized'
   description 'Replaces the default Redmine text editor with Monaco Editor (VS Code engine) with Markdown syntax highlighting and side-by-side preview.'
-  version     '0.8.5'
+  version     '0.8.5-custom'
   url         'https://github.com/ochipin/redmine_monaco_editor'
   author_url  'https://github.com/ochipin/'
   requires_redmine version_or_higher: '6.0.0'
