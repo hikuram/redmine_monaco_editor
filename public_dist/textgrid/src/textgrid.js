@@ -347,11 +347,60 @@ function parseMarkdown(text) {
   return r ? r.rows : null;
 }
 
+function isEscapedMarkdownChar(text, index) {
+  let count = 0;
+  for (let i = index - 1; i >= 0 && text.charAt(i) === '\\'; i -= 1) {
+    count += 1;
+  }
+  return count % 2 === 1;
+}
+
+function hasUnescapedMarkdownPipe(text) {
+  for (let i = 0; i < text.length; i += 1) {
+    if (text.charAt(i) === '|' && !isEscapedMarkdownChar(text, i)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function splitMarkdownTableRow(row) {
+  const cells = [];
+  let cell = '';
+  for (let i = 0; i < row.length; i += 1) {
+    const ch = row.charAt(i);
+    if (ch === '|' && !isEscapedMarkdownChar(row, i)) {
+      cells.push(cell);
+      cell = '';
+    } else {
+      cell += ch;
+    }
+  }
+  cells.push(cell);
+  return cells;
+}
+
+function unescapeMarkdownTableCell(cell) {
+  return String(cell == null ? '' : cell)
+    .trim()
+    .replace(/\\\|/g, '|')
+    .replace(/<br\s*\/?>/gi, '\n');
+}
+
+function splitMarkdownTableCells(line) {
+  const s = line.trim();
+  const parts = splitMarkdownTableRow(s);
+  if (s.charAt(0) === '|') { parts.shift(); }
+  if (s.charAt(s.length - 1) === '|' && !isEscapedMarkdownChar(s, s.length - 1)) { parts.pop(); }
+  return parts;
+}
+
 // Markdown テーブル → { rows, styles }。
 //   - 太字 **xxx** または ***xxx*** / 斜体 *xxx* または ***xxx*** を剥がす
 //   - Markdown には背景色・下線の標準構文がないため、対応するスタイルは無い
+//   - セル内のエスケープ済みパイプ「\|」は列区切りとして扱わない
 function parseMarkdownWithStyles(text) {
-  const lines = text.split(/\r?\n/).filter((l) => /\|/.test(l));
+  const lines = text.split(/\r?\n/).filter((l) => hasUnescapedMarkdownPipe(l));
   if (!lines.length) { return null; }
   const rows = [];
   const styles = [];
@@ -361,10 +410,7 @@ function parseMarkdownWithStyles(text) {
     if (/^\|?(:?-{2,}:?\|?)+$/.test(compact)) {
       // 区切り行から列ごとの align を抽出する。
       // 各セル: ":---:" → center, ":---" → left, "---:" → right, "---" → null
-      let sep = line.trim();
-      if (sep.startsWith('|')) { sep = sep.slice(1); }
-      if (sep.endsWith('|')) { sep = sep.slice(0, -1); }
-      columnAligns = sep.split('|').map((cell) => {
+      columnAligns = splitMarkdownTableCells(line).map((cell) => {
         const c = cell.trim();
         const left = c.startsWith(':');
         const right = c.endsWith(':');
@@ -375,12 +421,7 @@ function parseMarkdownWithStyles(text) {
       });
       return;
     }
-    let s = line.trim();
-    if (s.startsWith('|')) { s = s.slice(1); }
-    if (s.endsWith('|')) { s = s.slice(0, -1); }
-    const rawCells = s.split('|').map((x) => x.trim()
-      .replace(/\\\|/g, '|')
-      .replace(/<br\s*\/?>/gi, '\n'));
+    const rawCells = splitMarkdownTableCells(line).map(unescapeMarkdownTableCell);
     const valueRow = [];
     const styleRow = [];
     rawCells.forEach((cell) => {
