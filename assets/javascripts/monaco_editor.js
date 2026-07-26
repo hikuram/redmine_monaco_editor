@@ -6820,6 +6820,13 @@
     return !!form.querySelector('input[type=file].filedrop');
   }
 
+  function escapeMarkdownTableCell(cell) {
+    return String(cell == null ? '' : cell)
+      .replace(/\|/g, '\\|')
+      .replace(/\r\n|\r|\n/g, '<br>')
+      .trim();
+  }
+
   // 行列データをRedmine記法の表へ変換する。
   // 1行目をヘッダーとして扱い、Markdown/Textileのどちらにも対応する。
   function tableRowsToMarkup(rows, fmt) {
@@ -6851,17 +6858,14 @@
         tableLines.push('| ' + tRowCells.join(' | ') + ' |');
       }
     } else {
-      var mFormatCell = function (c) {
-        return String(c || '').trim().replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>');
-      };
-      var mHeadCells = rows[0].map(mFormatCell);
+      var mHeadCells = rows[0].map(escapeMarkdownTableCell);
       tableLines.push('| ' + mHeadCells.join(' | ') + ' |');
 
       var separator = rows[0].map(function () { return '---'; });
       tableLines.push('| ' + separator.join(' | ') + ' |');
 
       for (var mr = 1; mr < rows.length; mr++) {
-        var mRowCells = rows[mr].map(mFormatCell);
+        var mRowCells = rows[mr].map(escapeMarkdownTableCell);
         tableLines.push('| ' + mRowCells.join(' | ') + ' |');
       }
     }
@@ -7015,49 +7019,12 @@
                 while (row.length < maxColumns) { row.push(''); }
               });
 
-              var tableLines = [];
-              
-              if (ctx.fmt === 'textile') {
-                // Textileフォーマット
-                var tFormatCell = function(c) { return c.replace(/\|/g, '&#124;'); };
-                var headCells = rows[0].map(tFormatCell);
-                tableLines.push('|_. ' + headCells.join(' |_. ') + ' |');
-                
-                for (var r = 1; r < rows.length; r++) {
-                  var rowCells = rows[r].map(tFormatCell);
-                  tableLines.push('| ' + rowCells.join(' | ') + ' |');
-                }
-              } else {
-                // Markdownフォーマット
-                var mFormatCell = function(c) { 
-                  return c.replace(/\|/g, '\\|').replace(/\n/g, '<br>'); 
-                };
-                var headCells = rows[0].map(mFormatCell);
-                tableLines.push('| ' + headCells.join(' | ') + ' |');
-                
-                var separator = rows[0].map(function() { return '--'; });
-                tableLines.push('| ' + separator.join(' | ') + ' |');
-                
-                for (var r = 1; r < rows.length; r++) {
-                  var rowCells = rows[r].map(mFormatCell);
-                  tableLines.push('| ' + rowCells.join(' | ') + ' |');
-                }
+              var htmlTableText = tableRowsToMarkup(rows, ctx.fmt);
+              if (insertTableMarkup(ctx.editor, htmlTableText, 'paste-html-table')) {
+                e.preventDefault();
+                e.stopPropagation();
+                return;
               }
-
-              var insertText = tableLines.join('\n') + '\n\n';
-              var editor = ctx.editor;
-              var sel = editor.getSelection();
-              
-              editor.executeEdits('paste-html-table', [{
-                range: sel,
-                text: insertText,
-                forceMoveMarkers: true
-              }]);
-              
-              editor.focus();
-              e.preventDefault();
-              e.stopPropagation();
-              return;
             }
           }
         }
