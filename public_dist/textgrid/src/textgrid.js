@@ -395,6 +395,16 @@ function splitMarkdownTableCells(line) {
   return parts;
 }
 
+function isMarkdownTableSeparatorLine(line) {
+  const compact = String(line == null ? '' : line).replace(/\s/g, '');
+  return /^\|?(:?-{2,}:?\|?)+$/.test(compact);
+}
+
+function looksLikeMarkdownTable(text) {
+  const lines = String(text == null ? '' : text).split(/\r?\n/);
+  return lines.some((line) => isMarkdownTableSeparatorLine(line));
+}
+
 // Markdown テーブル → { rows, styles }。
 //   - 太字 **xxx** または ***xxx*** / 斜体 *xxx* または ***xxx*** を剥がす
 //   - Markdown には背景色・下線の標準構文がないため、対応するスタイルは無い
@@ -407,7 +417,7 @@ function parseMarkdownWithStyles(text) {
   let columnAligns = null; // 区切り行から拾った列ごとの align（'left'/'center'/'right'/null）
   lines.forEach((line) => {
     const compact = line.replace(/\s/g, '');
-    if (/^\|?(:?-{2,}:?\|?)+$/.test(compact)) {
+    if (isMarkdownTableSeparatorLine(line)) {
       // 区切り行から列ごとの align を抽出する。
       // 各セル: ":---:" → center, ":---" → left, "---:" → right, "---" → null
       columnAligns = splitMarkdownTableCells(line).map((cell) => {
@@ -2400,18 +2410,29 @@ class TableGrid {
     let parsedMerges = null;
     const looksLikeTable = /\|/.test(text) && /\n/.test(text);
     if (looksLikeTable) {
-      const tx = parseTextileWithStyles(text);
-      // Textile と判定する条件: ヘッダ行があるか、または装飾・結合が含まれる
-      if (tx && tx.rows && tx.rows.length) {
-        const hasHeader = tx.isHeader && tx.isHeader[0];
-        const hasStyleOrMerge =
-          (tx.styles && tx.styles.some((row) => row.some((s) => s))) ||
-          (tx.merges && tx.merges.some((row) => row.some((m) => m)));
-        if (hasHeader || hasStyleOrMerge) {
-          format = 'textile';
-          parsedRows = tx.rows;
-          parsedStyles = tx.styles;
-          parsedMerges = tx.merges;
+      const preferMarkdown = looksLikeMarkdownTable(text);
+      if (preferMarkdown) {
+        const md = parseMarkdownWithStyles(text);
+        if (md && md.rows && md.rows.length) {
+          format = 'markdown';
+          parsedRows = md.rows;
+          parsedStyles = md.styles;
+        }
+      }
+      if (!format) {
+        const tx = parseTextileWithStyles(text);
+        // Textile と判定する条件: ヘッダ行があるか、または装飾・結合が含まれる
+        if (tx && tx.rows && tx.rows.length) {
+          const hasHeader = tx.isHeader && tx.isHeader[0];
+          const hasStyleOrMerge =
+            (tx.styles && tx.styles.some((row) => row.some((s) => s))) ||
+            (tx.merges && tx.merges.some((row) => row.some((m) => m)));
+          if (hasHeader || hasStyleOrMerge) {
+            format = 'textile';
+            parsedRows = tx.rows;
+            parsedStyles = tx.styles;
+            parsedMerges = tx.merges;
+          }
         }
       }
       if (!format) {
@@ -3468,20 +3489,23 @@ export function initTableBuilder(ctx) {
   // 1行目をヘッダとして扱う。パースできなければ空表を返す。
   // Markdown は太字・斜体、Textile は背景色・太字・斜体・下線の装飾を復元する。
   function textToMatrix(text, format) {
-    if (format === 'textile') {
-      const parsed = parseTextileWithStyles(text);
-      if (parsed && parsed.rows.length) { return textileParsedToMatrix(parsed); }
-      // フォールバック: Markdown としてパース（Textile装飾は失われるが、太字・斜体は復元）
+    // Markdown の区切り行（|---| など）がある場合は、チケットの既定形式に
+    // 関わらず Markdown として先に読む。Textile の単純 split('|') に渡すと、
+    // セル内のエスケープ済みパイプ「\|」が「\」+列区切りとして誤分割される。
+    const preferMarkdown = looksLikeMarkdownTable(text);
+    if (format !== 'textile' || preferMarkdown) {
       const mdParsed = parseMarkdownWithStyles(text);
       if (mdParsed && mdParsed.rows.length) { return markdownParsedToMatrix(mdParsed); }
+      const tx = parseTextileWithStyles(text);
+      if (tx && tx.rows.length) { return textileParsedToMatrix(tx); }
       return createMatrix('表');
     }
-    // Markdown 経路: 太字・斜体の装飾を復元する
+
+    const parsed = parseTextileWithStyles(text);
+    if (parsed && parsed.rows.length) { return textileParsedToMatrix(parsed); }
+    // フォールバック: Markdown としてパース（Textile装飾は失われるが、太字・斜体は復元）
     const mdParsed = parseMarkdownWithStyles(text);
     if (mdParsed && mdParsed.rows.length) { return markdownParsedToMatrix(mdParsed); }
-    // フォールバック: Textile としてパース
-    const tx = parseTextileWithStyles(text);
-    if (tx && tx.rows.length) { return textileParsedToMatrix(tx); }
     return createMatrix('表');
   }
 
