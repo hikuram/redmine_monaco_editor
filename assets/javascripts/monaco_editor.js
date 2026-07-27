@@ -3994,7 +3994,218 @@
       editor.focus();
     }
 
+    // Markdown list editing helpers: Enter continues list markers, and Tab/Shift+Tab
+    // indents/unindents list items or selected Markdown lines. This reconnects the
+    // Redmine textarea behavior that is bypassed when Monaco replaces the textarea.
+    function setupMarkdownListEditing() {
+      if (fmt !== 'markdown') { return; }
+
+      var LIST_RE = /^(\s*)((?:[-*+])|(?:\d+)([.)]))(\s+)(\[[ xX]\]\s+)?(.*)$/;
+      var FENCE_RE = /^\s*(```+|~~~+)/;
+      var isComposing = false;
+      var domNode = editor.getDomNode();
+      if (domNode) {
+        domNode.addEventListener('compositionstart', function () { isComposing = true; });
+        domNode.addEventListener('compositionend', function () { isComposing = false; });
+      }
+
+      function parseListLine(line) {
+        var m = LIST_RE.exec(line || '');
+        if (!m) { return null; }
+
+        var marker = m[2];
+        var orderedDelimiter = m[3] || '';
+        var spaces = m[4] || ' ';
+        var task = m[5] || '';
+        var body = m[6] || '';
+        var ordered = /^\d/.test(marker);
+
+        return {
+          indent: m[1] || '',
+          marker: marker,
+          orderedDelimiter: orderedDelimiter,
+          spaces: spaces,
+          task: task,
+          body: body,
+          ordered: ordered,
+          fullMarker: marker + spaces + task
+        };
+      }
+
+      function isInsideFence(model, lineNumber) {
+        var inFence = false;
+        var fence = null;
+        for (var i = 1; i < lineNumber; i += 1) {
+          var line = model.getLineContent(i);
+          var m = FENCE_RE.exec(line);
+          if (!m) { continue; }
+          var token = m[1].charAt(0);
+          if (!inFence) {
+            inFence = true;
+            fence = token;
+          } else if (token === fence) {
+            inFence = false;
+            fence = null;
+          }
+        }
+        return inFence;
+      }
+
+      function nextOrderedMarker(marker, delimiter) {
+        var numberText = String(marker).replace(/[.)]$/, '');
+        var next = parseInt(numberText, 10) + 1;
+        var nextText = String(next);
+        if (numberText.length > nextText.length) {
+          nextText = new Array(numberText.length - nextText.length + 1).join('0') + nextText;
+        }
+        return nextText + (delimiter || '.');
+      }
+
+      function continuationMarker(info) {
+        if (info.ordered) {
+          return nextOrderedMarker(info.marker, info.orderedDelimiter) + info.spaces;
+        }
+        if (info.task) {
+          return info.marker + info.spaces + '[ ] ';
+        }
+        return info.marker + info.spaces;
+      }
+
+      function handleListEnter(e) {
+        if (isComposing || (e.browserEvent && e.browserEvent.isComposing)) { return false; }
+        var model = editor.getModel();
+        var sel = editor.getSelection();
+        if (!model || !sel) { return false; }
+        if (!(sel.startLineNumber === sel.endLineNumber && sel.startColumn === sel.endColumn)) { return false; }
+        if (isInsideFence(model, sel.startLineNumber)) { return false; }
+
+        var line = model.getLineContent(sel.startLineNumber);
+        if (sel.startColumn !== line.length + 1) { return false; }
+
+        var info = parseListLine(line);
+        if (!info) { return false; }
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        if ((info.body || '').trim() === '') {
+          editor.executeEdits('markdown-list-exit', [{
+            range: {
+              startLineNumber: sel.startLineNumber,
+              startColumn: 1,
+              endLineNumber: sel.startLineNumber,
+              endColumn: line.length + 1
+            },
+            text: info.indent,
+            forceMoveMarkers: true
+          }]);
+          editor.setPosition({
+            lineNumber: sel.startLineNumber,
+            column: info.indent.length + 1
+          });
+        } else {
+          var prefix = '\n' + info.indent + continuationMarker(info);
+          editor.executeEdits('markdown-list-continue', [{
+            range: sel,
+            text: prefix,
+            forceMoveMarkers: true
+          }]);
+        }
+
+        textarea.value = editor.getValue();
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        textarea.dispatchEvent(new Event('change', { bubbles: true }));
+        editor.focus();
+        return true;
+      }
+
+      function selectedLineRange(sel) {
+        var startLine = sel.startLineNumber;
+        var endLine = sel.endLineNumber;
+        if (endLine > startLine && sel.endColumn === 1) { endLine -= 1; }
+        return { startLine: startLine, endLine: endLine };
+      }
+
+      function indentStepForLine(line) {
+        var info = parseListLine(line);
+        if (info && info.ordered) { return 4; }
+        return 2;
+      }
+
+      function removeLeadingSpaces(line, count) {
+        var remove = Math.min(count, (/^ */.exec(line) || [''])[0].length);
+        return remove;
+      }
+
+      function handleMarkdownTab(e) {
+        var model = editor.getModel();
+        var sel = editor.getSelection();
+        if (!model || !sel) { return false; }
+
+        var hasSelection = !(sel.startLineNumber === sel.endLineNumber && sel.startColumn === sel.endColumn);
+        var range = selectedLineRange(sel);
+        var singleLine = range.startLine === range.endLine;
+        var line = model.getLineContent(range.startLine);
+        var currentLineIsList = !!parseListLine(line);
+
+        // Keep Monaco's normal Tab behavior unless there is a list-editing intent
+        // or a multi-line/selected Markdown block is being edited.
+        if (!hasSelection && !currentLineIsList) { return false; }
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        var edits = [];
+        for (var i = range.startLine; i <= range.endLine; i += 1) {
+          var lineContent = model.getLineContent(i);
+          var step = indentStepForLine(lineContent);
+          if (e.shiftKey) {
+            var n = removeLeadingSpaces(lineContent, step);
+            if (n > 0) {
+              edits.push({
+                range: {
+                  startLineNumber: i, startColumn: 1,
+                  endLineNumber: i, endColumn: n + 1
+                },
+                text: '',
+                forceMoveMarkers: true
+              });
+            }
+          } else {
+            edits.push({
+              range: {
+                startLineNumber: i, startColumn: 1,
+                endLineNumber: i, endColumn: 1
+              },
+              text: new Array(step + 1).join(' '),
+              forceMoveMarkers: true
+            });
+          }
+        }
+
+        if (edits.length > 0) {
+          editor.executeEdits(e.shiftKey ? 'markdown-list-outdent' : 'markdown-list-indent', edits);
+          textarea.value = editor.getValue();
+          textarea.dispatchEvent(new Event('input', { bubbles: true }));
+          textarea.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        editor.focus();
+        return true;
+      }
+
+      editor.onKeyDown(function (e) {
+        if (e.keyCode === window.monaco.KeyCode.Enter) {
+          handleListEnter(e);
+          return;
+        }
+        if (e.keyCode === window.monaco.KeyCode.Tab) {
+          handleMarkdownTab(e);
+        }
+      });
+    }
+
     // ---- ハンドラ登録（すべて記法テーブル経由） ----
+    setupMarkdownListEditing();
     btns.bold.addEventListener('click', function () { applyWrap('bold'); });
     btns.italic.addEventListener('click', function () { applyWrap('italic'); });
     btns.underline.addEventListener('click', function () { applyWrap('underline'); });
