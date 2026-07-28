@@ -3941,10 +3941,12 @@
       toggleLineSpec(s);
     }
 
-    // Markdown blockquote should nest instead of toggling off. Redmine's
-    // textarea helper lets repeated quote actions deepen the quote level;
-    // mimic that by always adding one "> " marker per selected line.
-    function addMarkdownQuotePrefix(spec) {
+    // Markdown blockquote handling:
+    // - if any non-empty selected line is not quoted, add one quote level to all lines;
+    // - if all non-empty selected lines are quoted, remove one quote level.
+    // This keeps mixed selections natural: normal text becomes quoted, while existing
+    // quotes are nested one level deeper.
+    function toggleMarkdownBlockquote(spec) {
       var sel = editor.getSelection();
       var model = editor.getModel();
       if (!sel || !model) { return; }
@@ -3954,20 +3956,43 @@
       if (endLine > startLine && sel.endColumn === 1) { endLine--; }
 
       var prefix = spec.prefix || '> ';
-      var edits = [];
+      var quoteRe = /^(\s*)> ?/;
+      var nonEmptyLines = [];
+      var allNonEmptyQuoted = true;
+
       for (var i = startLine; i <= endLine; i++) {
         var lineContent = model.getLineContent(i);
+        if ((lineContent || '').trim() === '') { continue; }
+        nonEmptyLines.push(lineContent);
+        if (!quoteRe.test(lineContent)) {
+          allNonEmptyQuoted = false;
+        }
+      }
+
+      var removeOneLevel = nonEmptyLines.length > 0 && allNonEmptyQuoted;
+      var edits = [];
+
+      for (var j = startLine; j <= endLine; j++) {
+        var current = model.getLineContent(j);
+        var nextText;
+
+        if (removeOneLevel) {
+          nextText = current.replace(quoteRe, '$1');
+        } else {
+          nextText = prefix + current;
+        }
+
         edits.push({
           range: {
-            startLineNumber: i, startColumn: 1,
-            endLineNumber: i, endColumn: lineContent.length + 1
+            startLineNumber: j, startColumn: 1,
+            endLineNumber: j, endColumn: current.length + 1
           },
-          text: prefix + lineContent,
+          text: nextText,
           forceMoveMarkers: true
         });
       }
 
-      editor.executeEdits('deco-blockquote-nest', edits);
+      editor.executeEdits(removeOneLevel ? 'deco-blockquote-unquote' : 'deco-blockquote-quote', edits);
       editor.focus();
     }
 
@@ -3975,7 +4000,7 @@
       var s = syntax.blockquote;
       if (!s) { return; }
       if (fmt === 'markdown') {
-        addMarkdownQuotePrefix(s);
+        toggleMarkdownBlockquote(s);
       } else {
         toggleLineSpec(s);
       }
