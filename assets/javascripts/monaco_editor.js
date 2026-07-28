@@ -4193,12 +4193,24 @@
         return true;
       }
 
+      function hasNonShiftModifier(e) {
+        var be = e && e.browserEvent;
+        return !!(
+          e && (e.ctrlKey || e.metaKey || e.altKey) ||
+          be && (be.ctrlKey || be.metaKey || be.altKey)
+        );
+      }
+
       editor.onKeyDown(function (e) {
+        // Only plain Enter should continue Markdown lists. Ctrl/Cmd+Enter must be
+        // left to Monaco command handlers so Redmine-style submit shortcuts work.
         if (e.keyCode === window.monaco.KeyCode.Enter) {
-          handleListEnter(e);
+          if (!hasNonShiftModifier(e) && !e.shiftKey && !(e.browserEvent && e.browserEvent.shiftKey)) {
+            handleListEnter(e);
+          }
           return;
         }
-        if (e.keyCode === window.monaco.KeyCode.Tab) {
+        if (e.keyCode === window.monaco.KeyCode.Tab && !hasNonShiftModifier(e)) {
           handleMarkdownTab(e);
         }
       });
