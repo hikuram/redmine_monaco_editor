@@ -3941,6 +3941,46 @@
       toggleLineSpec(s);
     }
 
+    // Markdown blockquote should nest instead of toggling off. Redmine's
+    // textarea helper lets repeated quote actions deepen the quote level;
+    // mimic that by always adding one "> " marker per selected line.
+    function addMarkdownQuotePrefix(spec) {
+      var sel = editor.getSelection();
+      var model = editor.getModel();
+      if (!sel || !model) { return; }
+
+      var startLine = sel.startLineNumber;
+      var endLine = sel.endLineNumber;
+      if (endLine > startLine && sel.endColumn === 1) { endLine--; }
+
+      var prefix = spec.prefix || '> ';
+      var edits = [];
+      for (var i = startLine; i <= endLine; i++) {
+        var lineContent = model.getLineContent(i);
+        edits.push({
+          range: {
+            startLineNumber: i, startColumn: 1,
+            endLineNumber: i, endColumn: lineContent.length + 1
+          },
+          text: prefix + lineContent,
+          forceMoveMarkers: true
+        });
+      }
+
+      editor.executeEdits('deco-blockquote-nest', edits);
+      editor.focus();
+    }
+
+    function applyBlockquote() {
+      var s = syntax.blockquote;
+      if (!s) { return; }
+      if (fmt === 'markdown') {
+        addMarkdownQuotePrefix(s);
+      } else {
+        toggleLineSpec(s);
+      }
+    }
+
     // コードブロック挿入。フォーマットにより記法が異なる。
     //   markdown: ```lang ... ```
     //   textile : <pre><code> ... </code></pre>
@@ -4229,7 +4269,7 @@
     btns.h4.addEventListener('click', function () { applyLine('h4'); });
     btns.ul.addEventListener('click', function () { applyLine('ul'); });
     btns.ol.addEventListener('click', function () { applyLine('ol'); });
-    btns.blockquote.addEventListener('click', function () { applyLine('blockquote'); });
+    btns.blockquote.addEventListener('click', applyBlockquote);
     btns.codeBlock.addEventListener('click', applyCodeBlock);
     setupTableGridPicker(btns.table, editor, textarea);
     setupTableBuilder(btns.tableBuilder, editor, textarea, wrapper);
