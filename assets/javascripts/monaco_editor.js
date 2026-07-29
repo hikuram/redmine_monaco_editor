@@ -81,9 +81,9 @@
 
   function defaultUiPrefs() {
     return {
-      lastMode: 'edit',
+      // Store the last editing layout only. Preview is a transient view.
+      lastEditMode: 'edit',
       lastSplitMode: 'split',
-      previewReturnMode: 'edit',
       splitRatio: {
         split: 0.5,
         splitV: 0.5
@@ -103,6 +103,10 @@
     var n = parseFloat(value);
     if (isNaN(n)) { n = fallback; }
     return Math.max(0.1, Math.min(0.9, n));
+  }
+
+  function normalizeEditMode(mode) {
+    return (mode === 'split' || mode === 'split-v') ? mode : 'edit';
   }
 
   function normalizeMode(mode) {
@@ -126,9 +130,13 @@
       try {
         var parsed = JSON.parse(raw);
         if (parsed && typeof parsed === 'object') {
-          prefs.lastMode = normalizeMode(parsed.lastMode || prefs.lastMode);
+          // v1 originally stored lastMode, including preview. Treat preview as transient
+          // and migrate it to the last editing layout instead.
+          prefs.lastEditMode = normalizeEditMode(parsed.lastEditMode || parsed.lastMode || prefs.lastEditMode);
           prefs.lastSplitMode = normalizeSplitMode(parsed.lastSplitMode || prefs.lastSplitMode);
-          prefs.previewReturnMode = previewReturnableMode(parsed.previewReturnMode || prefs.previewReturnMode);
+          if ((parsed.lastEditMode || parsed.lastMode) === 'preview') {
+            prefs.lastEditMode = previewReturnableMode(parsed.previewReturnMode || prefs.lastSplitMode || 'edit');
+          }
           if (parsed.splitRatio && typeof parsed.splitRatio === 'object') {
             prefs.splitRatio.split = clampRatio(parsed.splitRatio.split, prefs.splitRatio.split);
             prefs.splitRatio.splitV = clampRatio(parsed.splitRatio.splitV, prefs.splitRatio.splitV);
@@ -139,9 +147,9 @@
       // 旧バージョンの単一キーから一度だけ自然移行する。
       var legacyMode = safeLocalStorageGet(LEGACY_MODE_KEY);
       if (legacyMode) {
-        prefs.lastMode = normalizeMode(legacyMode);
-        if (prefs.lastMode === 'split' || prefs.lastMode === 'split-v') {
-          prefs.lastSplitMode = prefs.lastMode;
+        prefs.lastEditMode = normalizeEditMode(legacyMode);
+        if (prefs.lastEditMode === 'split' || prefs.lastEditMode === 'split-v') {
+          prefs.lastSplitMode = prefs.lastEditMode;
         }
       }
     }
@@ -151,15 +159,14 @@
 
   function writeUiPrefs(prefs) {
     if (!prefs || typeof prefs !== 'object') { return; }
-    prefs.lastMode = normalizeMode(prefs.lastMode);
+    prefs.lastEditMode = normalizeEditMode(prefs.lastEditMode);
     prefs.lastSplitMode = normalizeSplitMode(prefs.lastSplitMode);
-    prefs.previewReturnMode = previewReturnableMode(prefs.previewReturnMode);
     prefs.splitRatio = prefs.splitRatio || {};
     prefs.splitRatio.split = clampRatio(prefs.splitRatio.split, 0.5);
     prefs.splitRatio.splitV = clampRatio(prefs.splitRatio.splitV, 0.5);
     safeLocalStorageSet(UI_PREFS_KEY, JSON.stringify(prefs));
-    // 後方互換・手動確認用として旧キーも更新する。
-    safeLocalStorageSet(LEGACY_MODE_KEY, prefs.lastMode);
+    // Keep the legacy key useful, but never store preview there.
+    safeLocalStorageSet(LEGACY_MODE_KEY, prefs.lastEditMode);
   }
 
   function ratioKeyForMode(mode) {
@@ -2531,12 +2538,11 @@
       if (currentMode === 'diff') { return; }
 
       if (currentMode === 'preview') {
-        setMode(previewReturnMode || 'edit');
+        setMode(previewReturnMode || readUiPrefs().lastEditMode || 'edit');
       } else {
-        previewReturnMode = previewReturnableMode(currentMode);
-        var prefs = readUiPrefs();
-        prefs.previewReturnMode = previewReturnMode;
-        writeUiPrefs(prefs);
+        // Preview is transient. Remember where to return in this editor instance,
+        // but keep persisted preferences on the last editing layout.
+        previewReturnMode = previewReturnableMode(currentMode || readUiPrefs().lastEditMode);
         setMode('preview');
       }
     }
@@ -2565,15 +2571,13 @@
       if (diffState && mode !== 'diff') teardownDiff();
 
       currentMode = mode;
-      // diff モード以外はブラウザ(localStorage)に状態を保存
-      if (mode !== 'diff') {
+      // Persist only editing layouts. Preview is a transient view and should not
+      // be restored when the user opens an editor again.
+      if (mode === 'edit' || mode === 'split' || mode === 'split-v') {
         var prefs = readUiPrefs();
-        prefs.lastMode = normalizeMode(mode);
+        prefs.lastEditMode = mode;
         if (mode === 'split' || mode === 'split-v') {
           prefs.lastSplitMode = mode;
-          prefs.previewReturnMode = mode;
-        } else if (mode === 'edit') {
-          prefs.previewReturnMode = 'edit';
         }
         writeUiPrefs(prefs);
       }
@@ -2997,13 +3001,12 @@
     // カーソル行に「著者・日付・#注記」をうっすら表示する Blame ヒント。
     setupBlameHint(editor, textarea);
 
-    // 初期化の最後に、前回保存されたモードを復元する（なければ 'edit'）。
+    // 初期化の最後に、前回保存された編集レイアウトを復元する（なければ 'edit'）。
+    // Preview is intentionally not restored; it is a temporary view.
     // 旧キー monaco_editor_mode からの移行は readUiPrefs() 内で行う。
     var savedPrefs = readUiPrefs();
-    var savedMode = savedPrefs.lastMode || 'edit';
-    // 前回previewで終えた場合でも、ショートカットで自然に編集へ戻れるようにする。
-    // split系で終えていた場合はその方向へ戻す。
-    previewReturnMode = (savedMode === 'preview') ? previewReturnableMode(savedPrefs.previewReturnMode) : previewReturnableMode(savedMode);
+    var savedMode = normalizeEditMode(savedPrefs.lastEditMode || 'edit');
+    previewReturnMode = previewReturnableMode(savedMode);
     setMode(savedMode);
   }
   // ^ replaceTextarea の閉じカッコ
