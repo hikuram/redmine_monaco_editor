@@ -6523,7 +6523,7 @@
   // 添付ファイル情報の収集（画像ピッカー / ファイルリンクピッカー共通）
   // ============================================================
   // Redmineフォーム/詳細DOMから添付ファイルを収集する。
-  // 返り値: [{ filename, previewUrl, attachedAt, description }]
+  // Returns: [{ filename, previewUrl, imageUrl, attachedAt, description }]
   //   previewUrl  : サムネイルURL（取得できなければ null）
   //   attachedAt  : Unixタイムスタンプ（取得できなければ null）
   //   description : アップロード時の説明文（無ければ ''）
@@ -6532,18 +6532,20 @@
     var files = [];
     var seen = {};
 
-    function addEntry(filename, thumbnailUrl, attachedAt, description) {
+    function addEntry(filename, thumbnailUrl, attachedAt, description, imageUrl) {
       if (!filename) { return; }
       var existing = seen[filename];
       if (existing) {
         // 新しい方の情報で補完・上書き
         if (attachedAt && (!existing.attachedAt || attachedAt > existing.attachedAt)) {
           existing.previewUrl  = thumbnailUrl || existing.previewUrl;
+          existing.imageUrl    = imageUrl || existing.imageUrl;
           existing.attachedAt  = attachedAt;
           if (description) { existing.description = description; }
         } else {
           // 既存が新しくても、空欄だけは埋める
           if (!existing.previewUrl && thumbnailUrl) { existing.previewUrl = thumbnailUrl; }
+          if (!existing.imageUrl && imageUrl) { existing.imageUrl = imageUrl; }
           if (!existing.description && description) { existing.description = description; }
         }
         return;
@@ -6551,6 +6553,7 @@
       var entry = {
         filename: filename,
         previewUrl: thumbnailUrl || null,
+        imageUrl: imageUrl || thumbnailUrl || null,
         attachedAt: attachedAt || null,
         description: description || ''
       };
@@ -6567,7 +6570,10 @@
       if (!filename) { return; }
       var id = deletedInput ? deletedInput.value.trim() : null;
       var thumbnailUrl = id ? '/attachments/thumbnail/' + id + '/200' : null;
-      addEntry(filename, thumbnailUrl, null, '');
+      var sourceLink = span.querySelector('a[href*="/attachments/"]');
+      var imageUrl = sourceLink ? sourceLink.getAttribute('href') : null;
+      if (!imageUrl && id) { imageUrl = '/attachments/thumbnail/' + id + '/4096'; }
+      addEntry(filename, thumbnailUrl, null, '', imageUrl);
     });
 
     // ---- ソース2: 新規アップロード済み（.attachments_fields span[id^="attachments_"]）----
@@ -6590,9 +6596,10 @@
         id = dotIdx > 0 ? tokenVal.slice(0, dotIdx) : null;
       }
       var thumbnailUrl = id ? '/attachments/thumbnail/' + id + '/200' : null;
+      var imageUrl = id ? '/attachments/thumbnail/' + id + '/4096' : null;
       var desc = descInput ? descInput.value.trim() : '';
       // 新規アップロードは「今」が準備完了時刻
-      addEntry(filename, thumbnailUrl, Date.now(), desc);
+      addEntry(filename, thumbnailUrl, Date.now(), desc, imageUrl);
     });
 
     // ---- ソース3: div.attachments テーブル（チケット詳細画面の添付セクション）----
@@ -6634,7 +6641,7 @@
           }
         }
 
-        addEntry(filename, thumbMap[filename] || null, attachedAt, desc);
+        addEntry(filename, thumbMap[filename] || null, attachedAt, desc, a.getAttribute('href'));
       });
     }
 
@@ -6958,14 +6965,25 @@
     return 'clipboard-' + stamp + '-' + key + '.' + ext;
   }
 
-  // 画像の表示幅(px)。純正同様 naturalWidth / devicePixelRatio。
-  function resolveImageWidth(file) {
+  // Resolve the display width from a File, Blob, or same-origin image URL.
+  function resolveImageWidth(source) {
     return new Promise(function (resolve) {
-      if (!file.type || file.type.indexOf('image/') !== 0) { resolve(0); return; }
-      var url = URL.createObjectURL(file);
+      if (!source) { resolve(0); return; }
+      var isBlob = typeof Blob !== 'undefined' && source instanceof Blob;
+      if (isBlob && source.type && source.type.indexOf('image/') !== 0) {
+        resolve(0);
+        return;
+      }
+      var url = isBlob ? URL.createObjectURL(source) : String(source);
       var img = new Image();
-      img.onload = function () { URL.revokeObjectURL(url); resolve(img.naturalWidth || img.width || 0); };
-      img.onerror = function () { URL.revokeObjectURL(url); resolve(0); };
+      img.onload = function () {
+        if (isBlob) { URL.revokeObjectURL(url); }
+        resolve(img.naturalWidth || img.width || 0);
+      };
+      img.onerror = function () {
+        if (isBlob) { URL.revokeObjectURL(url); }
+        resolve(0);
+      };
       img.src = url;
     });
   }
@@ -6988,9 +7006,20 @@
     return '![](' + fname + ')';
   }
 
+  // Match Redmine clipboard insertion for both Textile and Markdown.
+  function buildSizedImageMarkup(fmt, name, widthPx) {
+    if (fmt === 'textile') {
+      return buildImageMarkup(fmt, name, widthPx);
+    }
+    if (widthPx > 0) {
+      return '<img style="width: ' + widthPx + 'px;" src="' + inlineFilename(name) + '"><br>';
+    }
+    return buildImageMarkup(fmt, name, 0);
+  }
+
   // 指定エディタのカーソル位置に記法を挿入(前後に必要な改行を補う)。
-  function insertMarkupAtCursor(editor, markup) {
-    var sel = editor.getSelection();
+  function insertMarkupAtCursor(editor, markup, selection, source) {
+    var sel = selection || editor.getSelection();
     var model = editor.getModel();
     if (!sel || !model) { return; }
     var lineContent = model.getLineContent(sel.startLineNumber);
@@ -6998,10 +7027,31 @@
     var after = lineContent.substring(sel.startColumn - 1);
     var prefix = (before.length > 0) ? '\n' : '';
     var suffix = (after.length > 0) ? '\n' : '';
-    editor.executeEdits('paste-image', [{
+    editor.executeEdits(source || 'paste-image', [{
       range: sel, text: prefix + markup + suffix, forceMoveMarkers: true
     }]);
     editor.focus();
+  }
+
+  function displayWidthFromNaturalWidth(naturalWidth) {
+    return naturalWidth > 0
+      ? Math.round(naturalWidth / (window.devicePixelRatio || 1))
+      : 0;
+  }
+
+  function insertSizedImageReference(editor, fmt, filename, imageSource, selection, source) {
+    return resolveImageWidth(imageSource).then(function (naturalWidth) {
+      var widthPx = displayWidthFromNaturalWidth(naturalWidth);
+      var markup = buildSizedImageMarkup(fmt, filename, widthPx);
+      insertMarkupAtCursor(editor, markup, selection, source);
+      return markup;
+    });
+  }
+
+  function isImageFileObject(file) {
+    if (!file) { return false; }
+    if (file.type && file.type.indexOf('image/') === 0) { return true; }
+    return /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?)$/i.test(file.name || '');
   }
 
   // クリップボードから画像Fileを集める(files と items の両対応・重複除外)。
@@ -7009,8 +7059,8 @@
     var out = [];
     var seen = {};
     function push(f) {
-      if (!f || !f.type || f.type.indexOf('image') === -1) { return; }
-      var key = f.type + ':' + (f.size || 0);
+      if (!isImageFileObject(f)) { return; }
+      var key = (f.name || '') + ':' + f.type + ':' + (f.size || 0) + ':' + (f.lastModified || 0);
       if (seen[key]) { return; }
       seen[key] = true;
       out.push(f);
@@ -7021,7 +7071,7 @@
     if (cd.items) {
       for (var j = 0; j < cd.items.length; j++) {
         var it = cd.items[j];
-        if (it && it.kind === 'file' && it.type && it.type.indexOf('image') === 0) {
+        if (it && it.kind === 'file' && (!it.type || it.type.indexOf('image/') === 0)) {
           var f = it.getAsFile();
           if (f) { push(f); }
         }
@@ -7032,10 +7082,15 @@
 
   // 1枚の画像を、指定エディタ文脈に対して処理する。
   // アップロードは純正(addFile)へ委譲し、記法は当該エディタのカーソル位置へ挿入。
-  function processClipboardImage(ctx, file) {
-    if (!file || !file.type || file.type.indexOf('image') === -1) { return; }
-    var filename = makeClipboardName(file.name, file.type);
-    var renamed = new File([file], filename, { type: file.type });
+  function processImageFile(ctx, file, options) {
+    if (!isImageFileObject(file)) { return; }
+    options = options || {};
+    var filename = options.renameAsClipboard
+      ? makeClipboardName(file.name, file.type)
+      : (file.name || makeClipboardName('', file.type));
+    var uploadFile = filename === file.name
+      ? file
+      : new File([file], filename, { type: file.type });
 
     // アップロードは純正に委譲（当該エディタのフォーム内 filedrop を使う）。
     var form = ctx.textarea.closest('form');
@@ -7057,35 +7112,110 @@
       if (typeof window.handleFileDropEvent !== 'undefined') {
         window.handleFileDropEvent.target = document.body;
       }
-      window.addFile(inputEl, renamed, true);
+      window.addFile(inputEl, uploadFile, true);
     } else if (window.console) {
-      console.warn('[monaco_editor] native addFile/filedrop not found; cannot upload pasted image');
+      console.warn('[monaco_editor] native addFile/filedrop not found; cannot upload image');
     }
 
-    resolveImageWidth(renamed).then(function (w) {
-      // 純正と同等のデバイスピクセル比(devicePixelRatio)を考慮した幅の算出
-      var widthPx = w > 0 ? Math.round(w / (window.devicePixelRatio || 1)) : 0;
-      var hasValidWidth = widthPx > 0;
-      
-      var markup = '';
+    return insertSizedImageReference(
+      ctx.editor,
+      ctx.fmt,
+      filename,
+      uploadFile,
+      options.selection || null,
+      options.source || 'insert-image-file'
+    );
+  }
 
-      if (ctx.fmt === 'textile') {
-        // Textile記法 (従来通り)
-        markup = buildImageMarkup(ctx.fmt, filename, widthPx);
-      } else {
-        // Markdown記法 (common_mark 相当)
-        // Redmineの getInlineAttachmentMarkup と同じ条件分岐を適用
-        if (hasValidWidth) {
-          // 幅が取れた場合はHTMLの img タグでサイズ指定
-          var fname = inlineFilename(filename); // 既存のヘルパーを利用
-          markup = '<img style="width: ' + widthPx + 'px;" src="' + fname + '"><br>';
-        } else {
-          // 幅が取れなければ通常のMarkdown記法
-          markup = buildImageMarkup(ctx.fmt, filename, 0);
+  function processImageBatch(ctx, files, options) {
+    var chain = Promise.resolve();
+    files.forEach(function (file, index) {
+      chain = chain.then(function () {
+        var itemOptions = {
+          renameAsClipboard: !!options.renameAsClipboard,
+          source: options.source,
+          selection: index === 0 ? (options.selection || null) : null
+        };
+        return processImageFile(ctx, file, itemOptions) || Promise.resolve();
+      });
+    });
+    return chain;
+  }
+
+  function dataTransferHasOnlyImages(dt) {
+    if (!dt) { return false; }
+    var fileCount = 0;
+    var imageCount = 0;
+
+    if (dt.files && dt.files.length > 0) {
+      for (var i = 0; i < dt.files.length; i++) {
+        fileCount++;
+        if (isImageFileObject(dt.files[i])) { imageCount++; }
+      }
+      return fileCount > 0 && imageCount === fileCount;
+    }
+
+    if (dt.items) {
+      for (var j = 0; j < dt.items.length; j++) {
+        var item = dt.items[j];
+        if (!item || item.kind !== 'file') { continue; }
+        fileCount++;
+        if (item.type && item.type.indexOf('image/') === 0) {
+          imageCount++;
         }
       }
+    }
+    return fileCount > 0 && imageCount === fileCount;
+  }
 
-      insertMarkupAtCursor(ctx.editor, markup);
+  function dropEditorForTarget(target) {
+    if (!target) { return null; }
+    for (var i = 0; i < clipboardPasteEditors.length; i++) {
+      var ctx = clipboardPasteEditors[i];
+      if (ctx.node && (ctx.node === target || ctx.node.contains(target))) { return ctx; }
+    }
+    return null;
+  }
+
+  function selectionAtDropPoint(editor, event) {
+    if (!editor || typeof editor.getTargetAtClientPoint !== 'function') { return null; }
+    var target = editor.getTargetAtClientPoint(event.clientX, event.clientY);
+    if (!target || !target.position) { return null; }
+    var position = target.position;
+    editor.setPosition(position);
+    return {
+      startLineNumber: position.lineNumber,
+      startColumn: position.column,
+      endLineNumber: position.lineNumber,
+      endColumn: position.column
+    };
+  }
+
+  function onDocumentImageDragOver(e) {
+    var ctx = dropEditorForTarget(e.target);
+    var dt = e.dataTransfer || (e.originalEvent && e.originalEvent.dataTransfer);
+    if (!ctx || !hasAttachmentTarget(ctx) || !dataTransferHasOnlyImages(dt)) { return; }
+    e.preventDefault();
+    e.stopPropagation();
+    if (dt) { dt.dropEffect = 'copy'; }
+  }
+
+  function onDocumentImageDrop(e) {
+    var ctx = dropEditorForTarget(e.target);
+    var dt = e.dataTransfer || (e.originalEvent && e.originalEvent.dataTransfer);
+    if (!ctx || !hasAttachmentTarget(ctx) || !dataTransferHasOnlyImages(dt)) { return; }
+    var images = collectClipboardImages(dt);
+    if (images.length === 0) { return; }
+
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === 'function') { e.stopImmediatePropagation(); }
+
+    var selection = selectionAtDropPoint(ctx.editor, e);
+    processImageBatch(ctx, images, {
+      renameAsClipboard: false,
+      source: 'drop-image',
+      selection: selection
     });
   }
 
@@ -7258,9 +7388,10 @@
     if (hasAttachmentTarget(ctx)) {
       var images = collectClipboardImages(cd);
       if (images.length > 0) {
-        for (var i = 0; i < images.length; i++) {
-          processClipboardImage(ctx, images[i]);
-        }
+        processImageBatch(ctx, images, {
+          renameAsClipboard: true,
+          source: 'paste-image'
+        });
         e.preventDefault();
         e.stopPropagation();
         return;
@@ -7355,6 +7486,8 @@
     if (!setupClipboardImagePaste._docListenerAttached) {
       setupClipboardImagePaste._docListenerAttached = true;
       document.addEventListener('paste', onDocumentPaste, true);
+      document.addEventListener('dragover', onDocumentImageDragOver, true);
+      document.addEventListener('drop', onDocumentImageDrop, true);
     }
   }
   function setupImagePicker(btn, editor, textarea) {
@@ -7464,7 +7597,7 @@
       card.appendChild(name);
 
       card.addEventListener('click', function () {
-        insertImageMarkdown(att.filename);
+        insertImageMarkdown(att.filename, att);
         pop.close();
       });
 
@@ -7488,7 +7621,7 @@
       row.appendChild(label);
 
       row.addEventListener('click', function () {
-        insertImageMarkdown(att.filename);
+        insertImageMarkdown(att.filename, att);
         pop.close();
       });
 
@@ -7527,10 +7660,33 @@
     }
 
     // Markdown画像記法を挿入
-    function insertImageMarkdown(filename) {
+    function insertImageMarkdown(filename, attachment) {
       var sel = editor.getSelection();
       var model = editor.getModel();
       if (!sel || !model) { return; }
+
+      if (!attachment) {
+        var currentAttachments = collectAttachmentsCommon();
+        for (var i = 0; i < currentAttachments.length; i++) {
+          if (currentAttachments[i].filename === filename) {
+            attachment = currentAttachments[i];
+            break;
+          }
+        }
+      }
+
+      // Existing image attachments use the same explicit-width markup as paste and drop.
+      if (isImage(filename) && attachment && attachment.imageUrl) {
+        insertSizedImageReference(
+          editor,
+          fmt,
+          filename,
+          attachment.imageUrl,
+          sel,
+          'insert-image'
+        );
+        return;
+      }
 
       var isEmpty = sel.startLineNumber === sel.endLineNumber &&
                     sel.startColumn === sel.endColumn;
