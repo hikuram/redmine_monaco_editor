@@ -3283,7 +3283,7 @@ export function initTableBuilder(ctx) {
         const styles = tb.grid.getStylesInOriginalOrder();
         const text = (tb.bound.format === 'textile')
           ? toTextile(tb.grid.sheet.columns, data, tb.grid.sheet.headerStyles, styles, tb.grid.sheet.cellMerges)
-          : toMarkdown(tb.grid.sheet.columns, data);
+          : toMarkdown(tb.grid.sheet.columns, data, tb.grid.sheet.headerStyles, styles);
         const res = tb.bound.commit(text);
         const okCommit = (res === true) || (res && res.ok);
         if (!okCommit) {
@@ -3342,7 +3342,7 @@ export function initTableBuilder(ctx) {
     const styles = g.getStylesInOriginalOrder();
     const text = (ctx.format === 'textile')
       ? toTextile(g.sheet.columns, data, g.sheet.headerStyles, styles, g.sheet.cellMerges)
-      : toMarkdown(g.sheet.columns, data);
+      : toMarkdown(g.sheet.columns, data, g.sheet.headerStyles, styles);
     if (ctx.copy) { ctx.copy(text); }
   }
 
@@ -3361,7 +3361,7 @@ export function initTableBuilder(ctx) {
     const styles = g.getStylesInOriginalOrder();
     const text = (tb.bound.format === 'textile')
       ? toTextile(g.sheet.columns, data, g.sheet.headerStyles, styles, g.sheet.cellMerges)
-      : toMarkdown(g.sheet.columns, data);
+      : toMarkdown(g.sheet.columns, data, g.sheet.headerStyles, styles);
     // 直前のエラー表示はいったん消してから commit を試みる。
     clearError();
     const res = tb.bound.commit(text);

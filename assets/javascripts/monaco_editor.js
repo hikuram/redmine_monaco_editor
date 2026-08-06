@@ -1968,6 +1968,7 @@
   var ICON_UL          = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="2.5" cy="4.5" r="1.2" fill="currentColor"/><line x1="6" y1="4.5" x2="14" y2="4.5" stroke="currentColor" stroke-width="1.3"/><circle cx="2.5" cy="8.5" r="1.2" fill="currentColor"/><line x1="6" y1="8.5" x2="14" y2="8.5" stroke="currentColor" stroke-width="1.3"/><circle cx="2.5" cy="12.5" r="1.2" fill="currentColor"/><line x1="6" y1="12.5" x2="14" y2="12.5" stroke="currentColor" stroke-width="1.3"/></svg>';
   var ICON_OL          = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><text x="1" y="6" font-size="5" font-family="sans-serif" fill="currentColor">1.</text><line x1="6" y1="4.5" x2="14" y2="4.5" stroke="currentColor" stroke-width="1.3"/><text x="1" y="10" font-size="5" font-family="sans-serif" fill="currentColor">2.</text><line x1="6" y1="8.5" x2="14" y2="8.5" stroke="currentColor" stroke-width="1.3"/><text x="1" y="14" font-size="5" font-family="sans-serif" fill="currentColor">3.</text><line x1="6" y1="12.5" x2="14" y2="12.5" stroke="currentColor" stroke-width="1.3"/></svg>';
   var ICON_BLOCKQUOTE  = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="2" width="3" height="12" rx="1.5" fill="currentColor" opacity="0.35"/><line x1="7" y1="5" x2="14" y2="5" stroke="currentColor" stroke-width="1.3"/><line x1="7" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.3"/><line x1="7" y1="11" x2="14" y2="11" stroke="currentColor" stroke-width="1.3"/></svg>';
+  var ICON_ALERT       = '<svg viewBox="0 0 20 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 2.5h12v10H6l-3.5 2v-2H2v-10z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><line x1="8" y1="5" x2="8" y2="8.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="10.5" r="0.8" fill="currentColor"/><path d="M16 6l2 2 2-2" transform="translate(-1 1)" stroke="currentColor" stroke-width="1.1" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   var ICON_CODE_BLOCK  = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="2" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.2"/><polyline points="5,6 3,8 5,10" stroke="currentColor" stroke-width="1.2" fill="none"/><polyline points="11,6 13,8 11,10" stroke="currentColor" stroke-width="1.2" fill="none"/><line x1="7" y1="6" x2="9" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>';
   var ICON_TABLE       = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="2" width="14" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="1" y1="6" x2="15" y2="6" stroke="currentColor" stroke-width="1.2"/><line x1="6" y1="2" x2="6" y2="14" stroke="currentColor" stroke-width="1"/><line x1="11" y1="2" x2="11" y2="14" stroke="currentColor" stroke-width="1"/></svg>';
   // 表ビルダー（Excelライクな表編集UIを開く）ボタン用アイコン。
@@ -2197,6 +2198,7 @@
       { key: 'ul',         icon: ICON_UL,          title: t('ul_tip', 'Bulleted list') },
       { key: 'ol',         icon: ICON_OL,          title: t('ol_tip', 'Numbered list'), sepAfter: true },
       { key: 'blockquote', icon: ICON_BLOCKQUOTE,  title: t('blockquote_tip', 'Quote') },
+      { key: 'alert',      icon: ICON_ALERT,       title: t('alert_tip', 'Insert alert'), wide: true },
       { key: 'codeBlock',  icon: ICON_CODE_BLOCK,  title: t('code_block_tip', 'Code block'), sepAfter: true },
       { key: 'table',        icon: ICON_TABLE,         title: t('table_tip', 'Insert table') },
       { key: 'tableBuilder', icon: ICON_TABLE_BUILDER, title: t('table_builder_tip', 'Open table builder') },
@@ -2212,6 +2214,11 @@
     DECO_BUTTON_DEFS.forEach(function (def) {
       var b = makeDecoBtn(def.icon, def.title);
       if (def.wide) { b.classList.add('monaco-deco-btn-wide'); }
+      if (def.key === 'alert') {
+        b.classList.add('monaco-alert-btn');
+        b.setAttribute('aria-haspopup', 'true');
+        b.setAttribute('aria-expanded', 'false');
+      }
       decoBtns[def.key] = b;
       decoToolbar.appendChild(b);
       if (def.sepAfter) { decoToolbar.appendChild(makeDecoSep()); }
@@ -3785,6 +3792,95 @@
     if (elements) { elements.style.display = 'none'; }
   }
 
+  var MARKDOWN_ALERT_TYPES = ['NOTE', 'TIP', 'IMPORTANT', 'WARNING', 'CAUTION'];
+  var MARKDOWN_ALERT_MARKER_RE = /^\s*(?:(?:> ?)+)?\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:[ \t]+.*)?[ \t]*$/i;
+
+  function markdownQuoteInfo(line) {
+    var text = String(line == null ? '' : line);
+    var indentMatch = /^[ \t]*/.exec(text);
+    var indent = indentMatch ? indentMatch[0] : '';
+    var pos = indent.length;
+    var depth = 0;
+
+    while (text.charAt(pos) === '>') {
+      depth++;
+      pos++;
+      if (text.charAt(pos) === ' ') { pos++; }
+    }
+
+    return { depth: depth, indent: indent };
+  }
+
+  function markdownQuotePrefix(depth, indent) {
+    var prefix = indent || '';
+    for (var i = 0; i < depth; i++) { prefix += '> '; }
+    return prefix;
+  }
+
+  function isMarkdownAlertMarker(line) {
+    return MARKDOWN_ALERT_MARKER_RE.test(String(line == null ? '' : line));
+  }
+
+  function transformMarkdownAlertLines(lines, alertType) {
+    var type = String(alertType || '').toUpperCase();
+    if (MARKDOWN_ALERT_TYPES.indexOf(type) === -1) { return lines.slice(); }
+
+    var body = [];
+    var firstMarkerInfo = null;
+
+    lines.forEach(function (line) {
+      if (isMarkdownAlertMarker(line)) {
+        if (!firstMarkerInfo) { firstMarkerInfo = markdownQuoteInfo(line); }
+        return;
+      }
+      body.push(line);
+    });
+
+    var quotedInfos = body.map(function (line) {
+      return markdownQuoteInfo(line);
+    });
+
+    var allQuoted = quotedInfos.length > 0 && quotedInfos.every(function (info) {
+      return info.depth > 0;
+    });
+    var markerDepth = 1;
+    var markerIndent = '';
+
+    if (allQuoted) {
+      var markerInfo = quotedInfos.reduce(function (best, info) {
+        return info.depth < best.depth ? info : best;
+      }, quotedInfos[0]);
+      markerDepth = markerInfo.depth;
+      markerIndent = markerInfo.indent;
+    } else if (body.length > 0) {
+      body = body.map(function (line) { return '> ' + line; });
+    } else if (firstMarkerInfo && firstMarkerInfo.depth > 0) {
+      markerDepth = firstMarkerInfo.depth;
+      markerIndent = firstMarkerInfo.indent;
+    }
+
+    var marker = markdownQuotePrefix(markerDepth, markerIndent) + '[!' + type + ']';
+    return [marker].concat(body);
+  }
+
+  function removeMarkdownAlertLines(lines) {
+    var body = lines.filter(function (line) {
+      return !isMarkdownAlertMarker(line);
+    });
+
+    if (body.length === 0) { return []; }
+
+    var allQuoted = body.every(function (line) {
+      return markdownQuoteInfo(line).depth > 0;
+    });
+
+    if (!allQuoted) { return body; }
+
+    return body.map(function (line) {
+      return String(line).replace(/^([ \t]*)> ?/, '$1');
+    });
+  }
+
   // ============================================================
   // 装飾ツールバーのクリック処理
   // ============================================================
@@ -4007,6 +4103,149 @@
       } else {
         toggleLineSpec(s);
       }
+    }
+
+    function replaceSelectedLines(source, transform) {
+      var sel = editor.getSelection();
+      var model = editor.getModel();
+      if (!sel || !model) { return; }
+
+      var startLine = sel.startLineNumber;
+      var endLine = sel.endLineNumber;
+      if (endLine > startLine && sel.endColumn === 1) { endLine--; }
+
+      var lines = [];
+      for (var lineNo = startLine; lineNo <= endLine; lineNo++) {
+        lines.push(model.getLineContent(lineNo));
+      }
+
+      var wasEmptyCaretLine = startLine === endLine &&
+        sel.startColumn === sel.endColumn &&
+        lines.length === 1 && lines[0] === '';
+      var nextLines = transform(lines);
+      var endContent = model.getLineContent(endLine);
+
+      editor.executeEdits(source, [{
+        range: {
+          startLineNumber: startLine,
+          startColumn: 1,
+          endLineNumber: endLine,
+          endColumn: endContent.length + 1
+        },
+        text: nextLines.join('\n'),
+        forceMoveMarkers: true
+      }]);
+
+      if (wasEmptyCaretLine && nextLines.length > 1) {
+        editor.setPosition({
+          lineNumber: startLine + 1,
+          column: nextLines[1].length + 1
+        });
+      }
+      editor.focus();
+    }
+
+    function applyMarkdownAlert(alertType) {
+      replaceSelectedLines('deco-alert-' + String(alertType || 'remove').toLowerCase(), function (lines) {
+        if (alertType) { return transformMarkdownAlertLines(lines, alertType); }
+        return removeMarkdownAlertLines(lines);
+      });
+    }
+
+    function setupAlertDropdown() {
+      var btn = btns.alert;
+      if (!btn) { return; }
+      if (fmt !== 'markdown') {
+        btn.style.display = 'none';
+        return;
+      }
+
+      var menu = null;
+      var menuOpen = false;
+      var options = [
+        { value: 'NOTE', label: t('alert_note', 'NOTE') },
+        { value: 'TIP', label: t('alert_tip_item', 'TIP') },
+        { value: 'IMPORTANT', label: t('alert_important', 'IMPORTANT') },
+        { value: 'WARNING', label: t('alert_warning', 'WARNING') },
+        { value: 'CAUTION', label: t('alert_caution', 'CAUTION') },
+        { value: null, label: t('alert_remove', 'Remove alert'), remove: true }
+      ];
+
+      function buildMenu() {
+        var m = document.createElement('div');
+        m.className = 'monaco-alert-menu';
+        m.setAttribute('role', 'menu');
+
+        options.forEach(function (option) {
+          var item = document.createElement('button');
+          item.type = 'button';
+          item.className = 'monaco-alert-menu-item';
+          if (option.remove) { item.classList.add('monaco-alert-menu-item--remove'); }
+          item.setAttribute('role', 'menuitem');
+          item.textContent = option.label;
+          item.addEventListener('mousedown', function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+          });
+          item.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            closeMenu();
+            applyMarkdownAlert(option.value);
+          });
+          m.appendChild(item);
+        });
+
+        return m;
+      }
+
+      function openMenu() {
+        if (!menu) { menu = buildMenu(); }
+        if (!wrapper.contains(menu)) { wrapper.appendChild(menu); }
+
+        var btnRect = btn.getBoundingClientRect();
+        var wrapperRect = wrapper.getBoundingClientRect();
+        menu.style.display = 'block';
+        menu.style.top = (btnRect.bottom - wrapperRect.top + 4) + 'px';
+
+        var left = btnRect.left - wrapperRect.left;
+        var maxLeft = Math.max(4, wrapperRect.width - menu.offsetWidth - 4);
+        menu.style.left = Math.max(4, Math.min(left, maxLeft)) + 'px';
+
+        menuOpen = true;
+        btn.classList.add('active');
+        btn.setAttribute('aria-expanded', 'true');
+
+        setTimeout(function () {
+          document.addEventListener('mousedown', onDocumentMouseDown, true);
+          document.addEventListener('keydown', onDocumentKeyDown, true);
+        }, 0);
+      }
+
+      function closeMenu() {
+        if (!menuOpen) { return; }
+        menuOpen = false;
+        if (menu) { menu.style.display = 'none'; }
+        btn.classList.remove('active');
+        btn.setAttribute('aria-expanded', 'false');
+        document.removeEventListener('mousedown', onDocumentMouseDown, true);
+        document.removeEventListener('keydown', onDocumentKeyDown, true);
+      }
+
+      function onDocumentMouseDown(ev) {
+        if (menu && (menu.contains(ev.target) || btn.contains(ev.target))) { return; }
+        closeMenu();
+      }
+
+      function onDocumentKeyDown(ev) {
+        if (ev.key === 'Escape') { closeMenu(); }
+      }
+
+      btn.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (menuOpen) { closeMenu(); } else { openMenu(); }
+      });
     }
 
     // コードブロック挿入。フォーマットにより記法が異なる。
@@ -4286,6 +4525,7 @@
 
     // ---- ハンドラ登録（すべて記法テーブル経由） ----
     setupMarkdownListEditing();
+    setupAlertDropdown();
     btns.bold.addEventListener('click', function () { applyWrap('bold'); });
     btns.italic.addEventListener('click', function () { applyWrap('italic'); });
     btns.underline.addEventListener('click', function () { applyWrap('underline'); });
@@ -6523,7 +6763,7 @@
   // 添付ファイル情報の収集（画像ピッカー / ファイルリンクピッカー共通）
   // ============================================================
   // Redmineフォーム/詳細DOMから添付ファイルを収集する。
-  // 返り値: [{ filename, previewUrl, attachedAt, description }]
+  // Returns: [{ filename, previewUrl, imageUrl, attachedAt, description }]
   //   previewUrl  : サムネイルURL（取得できなければ null）
   //   attachedAt  : Unixタイムスタンプ（取得できなければ null）
   //   description : アップロード時の説明文（無ければ ''）
@@ -6532,18 +6772,20 @@
     var files = [];
     var seen = {};
 
-    function addEntry(filename, thumbnailUrl, attachedAt, description) {
+    function addEntry(filename, thumbnailUrl, attachedAt, description, imageUrl) {
       if (!filename) { return; }
       var existing = seen[filename];
       if (existing) {
         // 新しい方の情報で補完・上書き
         if (attachedAt && (!existing.attachedAt || attachedAt > existing.attachedAt)) {
           existing.previewUrl  = thumbnailUrl || existing.previewUrl;
+          existing.imageUrl    = imageUrl || existing.imageUrl;
           existing.attachedAt  = attachedAt;
           if (description) { existing.description = description; }
         } else {
           // 既存が新しくても、空欄だけは埋める
           if (!existing.previewUrl && thumbnailUrl) { existing.previewUrl = thumbnailUrl; }
+          if (!existing.imageUrl && imageUrl) { existing.imageUrl = imageUrl; }
           if (!existing.description && description) { existing.description = description; }
         }
         return;
@@ -6551,6 +6793,7 @@
       var entry = {
         filename: filename,
         previewUrl: thumbnailUrl || null,
+        imageUrl: imageUrl || thumbnailUrl || null,
         attachedAt: attachedAt || null,
         description: description || ''
       };
@@ -6567,7 +6810,10 @@
       if (!filename) { return; }
       var id = deletedInput ? deletedInput.value.trim() : null;
       var thumbnailUrl = id ? '/attachments/thumbnail/' + id + '/200' : null;
-      addEntry(filename, thumbnailUrl, null, '');
+      var sourceLink = span.querySelector('a[href*="/attachments/"]');
+      var imageUrl = sourceLink ? sourceLink.getAttribute('href') : null;
+      if (!imageUrl && id) { imageUrl = '/attachments/thumbnail/' + id + '/4096'; }
+      addEntry(filename, thumbnailUrl, null, '', imageUrl);
     });
 
     // ---- ソース2: 新規アップロード済み（.attachments_fields span[id^="attachments_"]）----
@@ -6590,9 +6836,10 @@
         id = dotIdx > 0 ? tokenVal.slice(0, dotIdx) : null;
       }
       var thumbnailUrl = id ? '/attachments/thumbnail/' + id + '/200' : null;
+      var imageUrl = id ? '/attachments/thumbnail/' + id + '/4096' : null;
       var desc = descInput ? descInput.value.trim() : '';
       // 新規アップロードは「今」が準備完了時刻
-      addEntry(filename, thumbnailUrl, Date.now(), desc);
+      addEntry(filename, thumbnailUrl, Date.now(), desc, imageUrl);
     });
 
     // ---- ソース3: div.attachments テーブル（チケット詳細画面の添付セクション）----
@@ -6634,7 +6881,7 @@
           }
         }
 
-        addEntry(filename, thumbMap[filename] || null, attachedAt, desc);
+        addEntry(filename, thumbMap[filename] || null, attachedAt, desc, a.getAttribute('href'));
       });
     }
 
@@ -6958,14 +7205,25 @@
     return 'clipboard-' + stamp + '-' + key + '.' + ext;
   }
 
-  // 画像の表示幅(px)。純正同様 naturalWidth / devicePixelRatio。
-  function resolveImageWidth(file) {
+  // Resolve the display width from a File, Blob, or same-origin image URL.
+  function resolveImageWidth(source) {
     return new Promise(function (resolve) {
-      if (!file.type || file.type.indexOf('image/') !== 0) { resolve(0); return; }
-      var url = URL.createObjectURL(file);
+      if (!source) { resolve(0); return; }
+      var isBlob = typeof Blob !== 'undefined' && source instanceof Blob;
+      if (isBlob && source.type && source.type.indexOf('image/') !== 0) {
+        resolve(0);
+        return;
+      }
+      var url = isBlob ? URL.createObjectURL(source) : String(source);
       var img = new Image();
-      img.onload = function () { URL.revokeObjectURL(url); resolve(img.naturalWidth || img.width || 0); };
-      img.onerror = function () { URL.revokeObjectURL(url); resolve(0); };
+      img.onload = function () {
+        if (isBlob) { URL.revokeObjectURL(url); }
+        resolve(img.naturalWidth || img.width || 0);
+      };
+      img.onerror = function () {
+        if (isBlob) { URL.revokeObjectURL(url); }
+        resolve(0);
+      };
       img.src = url;
     });
   }
@@ -6988,9 +7246,20 @@
     return '![](' + fname + ')';
   }
 
+  // Match Redmine clipboard insertion for both Textile and Markdown.
+  function buildSizedImageMarkup(fmt, name, widthPx) {
+    if (fmt === 'textile') {
+      return buildImageMarkup(fmt, name, widthPx);
+    }
+    if (widthPx > 0) {
+      return '<img style="width: ' + widthPx + 'px;" src="' + inlineFilename(name) + '"><br>';
+    }
+    return buildImageMarkup(fmt, name, 0);
+  }
+
   // 指定エディタのカーソル位置に記法を挿入(前後に必要な改行を補う)。
-  function insertMarkupAtCursor(editor, markup) {
-    var sel = editor.getSelection();
+  function insertMarkupAtCursor(editor, markup, selection, source) {
+    var sel = selection || editor.getSelection();
     var model = editor.getModel();
     if (!sel || !model) { return; }
     var lineContent = model.getLineContent(sel.startLineNumber);
@@ -6998,10 +7267,31 @@
     var after = lineContent.substring(sel.startColumn - 1);
     var prefix = (before.length > 0) ? '\n' : '';
     var suffix = (after.length > 0) ? '\n' : '';
-    editor.executeEdits('paste-image', [{
+    editor.executeEdits(source || 'paste-image', [{
       range: sel, text: prefix + markup + suffix, forceMoveMarkers: true
     }]);
     editor.focus();
+  }
+
+  function displayWidthFromNaturalWidth(naturalWidth) {
+    return naturalWidth > 0
+      ? Math.round(naturalWidth / (window.devicePixelRatio || 1))
+      : 0;
+  }
+
+  function insertSizedImageReference(editor, fmt, filename, imageSource, selection, source) {
+    return resolveImageWidth(imageSource).then(function (naturalWidth) {
+      var widthPx = displayWidthFromNaturalWidth(naturalWidth);
+      var markup = buildSizedImageMarkup(fmt, filename, widthPx);
+      insertMarkupAtCursor(editor, markup, selection, source);
+      return markup;
+    });
+  }
+
+  function isImageFileObject(file) {
+    if (!file) { return false; }
+    if (file.type && file.type.indexOf('image/') === 0) { return true; }
+    return /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?)$/i.test(file.name || '');
   }
 
   // クリップボードから画像Fileを集める(files と items の両対応・重複除外)。
@@ -7009,8 +7299,8 @@
     var out = [];
     var seen = {};
     function push(f) {
-      if (!f || !f.type || f.type.indexOf('image') === -1) { return; }
-      var key = f.type + ':' + (f.size || 0);
+      if (!isImageFileObject(f)) { return; }
+      var key = (f.name || '') + ':' + f.type + ':' + (f.size || 0) + ':' + (f.lastModified || 0);
       if (seen[key]) { return; }
       seen[key] = true;
       out.push(f);
@@ -7021,7 +7311,7 @@
     if (cd.items) {
       for (var j = 0; j < cd.items.length; j++) {
         var it = cd.items[j];
-        if (it && it.kind === 'file' && it.type && it.type.indexOf('image') === 0) {
+        if (it && it.kind === 'file' && (!it.type || it.type.indexOf('image/') === 0)) {
           var f = it.getAsFile();
           if (f) { push(f); }
         }
@@ -7032,10 +7322,15 @@
 
   // 1枚の画像を、指定エディタ文脈に対して処理する。
   // アップロードは純正(addFile)へ委譲し、記法は当該エディタのカーソル位置へ挿入。
-  function processClipboardImage(ctx, file) {
-    if (!file || !file.type || file.type.indexOf('image') === -1) { return; }
-    var filename = makeClipboardName(file.name, file.type);
-    var renamed = new File([file], filename, { type: file.type });
+  function processImageFile(ctx, file, options) {
+    if (!isImageFileObject(file)) { return; }
+    options = options || {};
+    var filename = options.renameAsClipboard
+      ? makeClipboardName(file.name, file.type)
+      : (file.name || makeClipboardName('', file.type));
+    var uploadFile = filename === file.name
+      ? file
+      : new File([file], filename, { type: file.type });
 
     // アップロードは純正に委譲（当該エディタのフォーム内 filedrop を使う）。
     var form = ctx.textarea.closest('form');
@@ -7057,35 +7352,110 @@
       if (typeof window.handleFileDropEvent !== 'undefined') {
         window.handleFileDropEvent.target = document.body;
       }
-      window.addFile(inputEl, renamed, true);
+      window.addFile(inputEl, uploadFile, true);
     } else if (window.console) {
-      console.warn('[monaco_editor] native addFile/filedrop not found; cannot upload pasted image');
+      console.warn('[monaco_editor] native addFile/filedrop not found; cannot upload image');
     }
 
-    resolveImageWidth(renamed).then(function (w) {
-      // 純正と同等のデバイスピクセル比(devicePixelRatio)を考慮した幅の算出
-      var widthPx = w > 0 ? Math.round(w / (window.devicePixelRatio || 1)) : 0;
-      var hasValidWidth = widthPx > 0;
-      
-      var markup = '';
+    return insertSizedImageReference(
+      ctx.editor,
+      ctx.fmt,
+      filename,
+      uploadFile,
+      options.selection || null,
+      options.source || 'insert-image-file'
+    );
+  }
 
-      if (ctx.fmt === 'textile') {
-        // Textile記法 (従来通り)
-        markup = buildImageMarkup(ctx.fmt, filename, widthPx);
-      } else {
-        // Markdown記法 (common_mark 相当)
-        // Redmineの getInlineAttachmentMarkup と同じ条件分岐を適用
-        if (hasValidWidth) {
-          // 幅が取れた場合はHTMLの img タグでサイズ指定
-          var fname = inlineFilename(filename); // 既存のヘルパーを利用
-          markup = '<img style="width: ' + widthPx + 'px;" src="' + fname + '"><br>';
-        } else {
-          // 幅が取れなければ通常のMarkdown記法
-          markup = buildImageMarkup(ctx.fmt, filename, 0);
+  function processImageBatch(ctx, files, options) {
+    var chain = Promise.resolve();
+    files.forEach(function (file, index) {
+      chain = chain.then(function () {
+        var itemOptions = {
+          renameAsClipboard: !!options.renameAsClipboard,
+          source: options.source,
+          selection: index === 0 ? (options.selection || null) : null
+        };
+        return processImageFile(ctx, file, itemOptions) || Promise.resolve();
+      });
+    });
+    return chain;
+  }
+
+  function dataTransferHasOnlyImages(dt) {
+    if (!dt) { return false; }
+    var fileCount = 0;
+    var imageCount = 0;
+
+    if (dt.files && dt.files.length > 0) {
+      for (var i = 0; i < dt.files.length; i++) {
+        fileCount++;
+        if (isImageFileObject(dt.files[i])) { imageCount++; }
+      }
+      return fileCount > 0 && imageCount === fileCount;
+    }
+
+    if (dt.items) {
+      for (var j = 0; j < dt.items.length; j++) {
+        var item = dt.items[j];
+        if (!item || item.kind !== 'file') { continue; }
+        fileCount++;
+        if (item.type && item.type.indexOf('image/') === 0) {
+          imageCount++;
         }
       }
+    }
+    return fileCount > 0 && imageCount === fileCount;
+  }
 
-      insertMarkupAtCursor(ctx.editor, markup);
+  function dropEditorForTarget(target) {
+    if (!target) { return null; }
+    for (var i = 0; i < clipboardPasteEditors.length; i++) {
+      var ctx = clipboardPasteEditors[i];
+      if (ctx.node && (ctx.node === target || ctx.node.contains(target))) { return ctx; }
+    }
+    return null;
+  }
+
+  function selectionAtDropPoint(editor, event) {
+    if (!editor || typeof editor.getTargetAtClientPoint !== 'function') { return null; }
+    var target = editor.getTargetAtClientPoint(event.clientX, event.clientY);
+    if (!target || !target.position) { return null; }
+    var position = target.position;
+    editor.setPosition(position);
+    return {
+      startLineNumber: position.lineNumber,
+      startColumn: position.column,
+      endLineNumber: position.lineNumber,
+      endColumn: position.column
+    };
+  }
+
+  function onDocumentImageDragOver(e) {
+    var ctx = dropEditorForTarget(e.target);
+    var dt = e.dataTransfer || (e.originalEvent && e.originalEvent.dataTransfer);
+    if (!ctx || !hasAttachmentTarget(ctx) || !dataTransferHasOnlyImages(dt)) { return; }
+    e.preventDefault();
+    e.stopPropagation();
+    if (dt) { dt.dropEffect = 'copy'; }
+  }
+
+  function onDocumentImageDrop(e) {
+    var ctx = dropEditorForTarget(e.target);
+    var dt = e.dataTransfer || (e.originalEvent && e.originalEvent.dataTransfer);
+    if (!ctx || !hasAttachmentTarget(ctx) || !dataTransferHasOnlyImages(dt)) { return; }
+    var images = collectClipboardImages(dt);
+    if (images.length === 0) { return; }
+
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === 'function') { e.stopImmediatePropagation(); }
+
+    var selection = selectionAtDropPoint(ctx.editor, e);
+    processImageBatch(ctx, images, {
+      renameAsClipboard: false,
+      source: 'drop-image',
+      selection: selection
     });
   }
 
@@ -7258,9 +7628,10 @@
     if (hasAttachmentTarget(ctx)) {
       var images = collectClipboardImages(cd);
       if (images.length > 0) {
-        for (var i = 0; i < images.length; i++) {
-          processClipboardImage(ctx, images[i]);
-        }
+        processImageBatch(ctx, images, {
+          renameAsClipboard: true,
+          source: 'paste-image'
+        });
         e.preventDefault();
         e.stopPropagation();
         return;
@@ -7355,6 +7726,8 @@
     if (!setupClipboardImagePaste._docListenerAttached) {
       setupClipboardImagePaste._docListenerAttached = true;
       document.addEventListener('paste', onDocumentPaste, true);
+      document.addEventListener('dragover', onDocumentImageDragOver, true);
+      document.addEventListener('drop', onDocumentImageDrop, true);
     }
   }
   function setupImagePicker(btn, editor, textarea) {
@@ -7464,7 +7837,7 @@
       card.appendChild(name);
 
       card.addEventListener('click', function () {
-        insertImageMarkdown(att.filename);
+        insertImageMarkdown(att.filename, att);
         pop.close();
       });
 
@@ -7488,7 +7861,7 @@
       row.appendChild(label);
 
       row.addEventListener('click', function () {
-        insertImageMarkdown(att.filename);
+        insertImageMarkdown(att.filename, att);
         pop.close();
       });
 
@@ -7527,10 +7900,33 @@
     }
 
     // Markdown画像記法を挿入
-    function insertImageMarkdown(filename) {
+    function insertImageMarkdown(filename, attachment) {
       var sel = editor.getSelection();
       var model = editor.getModel();
       if (!sel || !model) { return; }
+
+      if (!attachment) {
+        var currentAttachments = collectAttachmentsCommon();
+        for (var i = 0; i < currentAttachments.length; i++) {
+          if (currentAttachments[i].filename === filename) {
+            attachment = currentAttachments[i];
+            break;
+          }
+        }
+      }
+
+      // Existing image attachments use the same explicit-width markup as paste and drop.
+      if (isImage(filename) && attachment && attachment.imageUrl) {
+        insertSizedImageReference(
+          editor,
+          fmt,
+          filename,
+          attachment.imageUrl,
+          sel,
+          'insert-image'
+        );
+        return;
+      }
 
       var isEmpty = sel.startLineNumber === sel.endLineNumber &&
                     sel.startColumn === sel.endColumn;
