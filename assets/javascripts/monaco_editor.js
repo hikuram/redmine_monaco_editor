@@ -1968,6 +1968,7 @@
   var ICON_UL          = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="2.5" cy="4.5" r="1.2" fill="currentColor"/><line x1="6" y1="4.5" x2="14" y2="4.5" stroke="currentColor" stroke-width="1.3"/><circle cx="2.5" cy="8.5" r="1.2" fill="currentColor"/><line x1="6" y1="8.5" x2="14" y2="8.5" stroke="currentColor" stroke-width="1.3"/><circle cx="2.5" cy="12.5" r="1.2" fill="currentColor"/><line x1="6" y1="12.5" x2="14" y2="12.5" stroke="currentColor" stroke-width="1.3"/></svg>';
   var ICON_OL          = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><text x="1" y="6" font-size="5" font-family="sans-serif" fill="currentColor">1.</text><line x1="6" y1="4.5" x2="14" y2="4.5" stroke="currentColor" stroke-width="1.3"/><text x="1" y="10" font-size="5" font-family="sans-serif" fill="currentColor">2.</text><line x1="6" y1="8.5" x2="14" y2="8.5" stroke="currentColor" stroke-width="1.3"/><text x="1" y="14" font-size="5" font-family="sans-serif" fill="currentColor">3.</text><line x1="6" y1="12.5" x2="14" y2="12.5" stroke="currentColor" stroke-width="1.3"/></svg>';
   var ICON_BLOCKQUOTE  = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="2" width="3" height="12" rx="1.5" fill="currentColor" opacity="0.35"/><line x1="7" y1="5" x2="14" y2="5" stroke="currentColor" stroke-width="1.3"/><line x1="7" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.3"/><line x1="7" y1="11" x2="14" y2="11" stroke="currentColor" stroke-width="1.3"/></svg>';
+  var ICON_ALERT       = '<svg viewBox="0 0 20 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 2.5h12v10H6l-3.5 2v-2H2v-10z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><line x1="8" y1="5" x2="8" y2="8.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="10.5" r="0.8" fill="currentColor"/><path d="M16 6l2 2 2-2" transform="translate(-1 1)" stroke="currentColor" stroke-width="1.1" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   var ICON_CODE_BLOCK  = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="2" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.2"/><polyline points="5,6 3,8 5,10" stroke="currentColor" stroke-width="1.2" fill="none"/><polyline points="11,6 13,8 11,10" stroke="currentColor" stroke-width="1.2" fill="none"/><line x1="7" y1="6" x2="9" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>';
   var ICON_TABLE       = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="2" width="14" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="1" y1="6" x2="15" y2="6" stroke="currentColor" stroke-width="1.2"/><line x1="6" y1="2" x2="6" y2="14" stroke="currentColor" stroke-width="1"/><line x1="11" y1="2" x2="11" y2="14" stroke="currentColor" stroke-width="1"/></svg>';
   // 表ビルダー（Excelライクな表編集UIを開く）ボタン用アイコン。
@@ -2197,6 +2198,7 @@
       { key: 'ul',         icon: ICON_UL,          title: t('ul_tip', 'Bulleted list') },
       { key: 'ol',         icon: ICON_OL,          title: t('ol_tip', 'Numbered list'), sepAfter: true },
       { key: 'blockquote', icon: ICON_BLOCKQUOTE,  title: t('blockquote_tip', 'Quote') },
+      { key: 'alert',      icon: ICON_ALERT,       title: t('alert_tip', 'Insert alert'), wide: true },
       { key: 'codeBlock',  icon: ICON_CODE_BLOCK,  title: t('code_block_tip', 'Code block'), sepAfter: true },
       { key: 'table',        icon: ICON_TABLE,         title: t('table_tip', 'Insert table') },
       { key: 'tableBuilder', icon: ICON_TABLE_BUILDER, title: t('table_builder_tip', 'Open table builder') },
@@ -2212,6 +2214,11 @@
     DECO_BUTTON_DEFS.forEach(function (def) {
       var b = makeDecoBtn(def.icon, def.title);
       if (def.wide) { b.classList.add('monaco-deco-btn-wide'); }
+      if (def.key === 'alert') {
+        b.classList.add('monaco-alert-btn');
+        b.setAttribute('aria-haspopup', 'true');
+        b.setAttribute('aria-expanded', 'false');
+      }
       decoBtns[def.key] = b;
       decoToolbar.appendChild(b);
       if (def.sepAfter) { decoToolbar.appendChild(makeDecoSep()); }
@@ -3785,6 +3792,95 @@
     if (elements) { elements.style.display = 'none'; }
   }
 
+  var MARKDOWN_ALERT_TYPES = ['NOTE', 'TIP', 'IMPORTANT', 'WARNING', 'CAUTION'];
+  var MARKDOWN_ALERT_MARKER_RE = /^\s*(?:(?:> ?)+)?\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:[ \t]+.*)?[ \t]*$/i;
+
+  function markdownQuoteInfo(line) {
+    var text = String(line == null ? '' : line);
+    var indentMatch = /^[ \t]*/.exec(text);
+    var indent = indentMatch ? indentMatch[0] : '';
+    var pos = indent.length;
+    var depth = 0;
+
+    while (text.charAt(pos) === '>') {
+      depth++;
+      pos++;
+      if (text.charAt(pos) === ' ') { pos++; }
+    }
+
+    return { depth: depth, indent: indent };
+  }
+
+  function markdownQuotePrefix(depth, indent) {
+    var prefix = indent || '';
+    for (var i = 0; i < depth; i++) { prefix += '> '; }
+    return prefix;
+  }
+
+  function isMarkdownAlertMarker(line) {
+    return MARKDOWN_ALERT_MARKER_RE.test(String(line == null ? '' : line));
+  }
+
+  function transformMarkdownAlertLines(lines, alertType) {
+    var type = String(alertType || '').toUpperCase();
+    if (MARKDOWN_ALERT_TYPES.indexOf(type) === -1) { return lines.slice(); }
+
+    var body = [];
+    var firstMarkerInfo = null;
+
+    lines.forEach(function (line) {
+      if (isMarkdownAlertMarker(line)) {
+        if (!firstMarkerInfo) { firstMarkerInfo = markdownQuoteInfo(line); }
+        return;
+      }
+      body.push(line);
+    });
+
+    var quotedInfos = body.map(function (line) {
+      return markdownQuoteInfo(line);
+    });
+
+    var allQuoted = quotedInfos.length > 0 && quotedInfos.every(function (info) {
+      return info.depth > 0;
+    });
+    var markerDepth = 1;
+    var markerIndent = '';
+
+    if (allQuoted) {
+      var markerInfo = quotedInfos.reduce(function (best, info) {
+        return info.depth < best.depth ? info : best;
+      }, quotedInfos[0]);
+      markerDepth = markerInfo.depth;
+      markerIndent = markerInfo.indent;
+    } else if (body.length > 0) {
+      body = body.map(function (line) { return '> ' + line; });
+    } else if (firstMarkerInfo && firstMarkerInfo.depth > 0) {
+      markerDepth = firstMarkerInfo.depth;
+      markerIndent = firstMarkerInfo.indent;
+    }
+
+    var marker = markdownQuotePrefix(markerDepth, markerIndent) + '[!' + type + ']';
+    return [marker].concat(body);
+  }
+
+  function removeMarkdownAlertLines(lines) {
+    var body = lines.filter(function (line) {
+      return !isMarkdownAlertMarker(line);
+    });
+
+    if (body.length === 0) { return []; }
+
+    var allQuoted = body.every(function (line) {
+      return markdownQuoteInfo(line).depth > 0;
+    });
+
+    if (!allQuoted) { return body; }
+
+    return body.map(function (line) {
+      return String(line).replace(/^([ \t]*)> ?/, '$1');
+    });
+  }
+
   // ============================================================
   // 装飾ツールバーのクリック処理
   // ============================================================
@@ -4007,6 +4103,149 @@
       } else {
         toggleLineSpec(s);
       }
+    }
+
+    function replaceSelectedLines(source, transform) {
+      var sel = editor.getSelection();
+      var model = editor.getModel();
+      if (!sel || !model) { return; }
+
+      var startLine = sel.startLineNumber;
+      var endLine = sel.endLineNumber;
+      if (endLine > startLine && sel.endColumn === 1) { endLine--; }
+
+      var lines = [];
+      for (var lineNo = startLine; lineNo <= endLine; lineNo++) {
+        lines.push(model.getLineContent(lineNo));
+      }
+
+      var wasEmptyCaretLine = startLine === endLine &&
+        sel.startColumn === sel.endColumn &&
+        lines.length === 1 && lines[0] === '';
+      var nextLines = transform(lines);
+      var endContent = model.getLineContent(endLine);
+
+      editor.executeEdits(source, [{
+        range: {
+          startLineNumber: startLine,
+          startColumn: 1,
+          endLineNumber: endLine,
+          endColumn: endContent.length + 1
+        },
+        text: nextLines.join('\n'),
+        forceMoveMarkers: true
+      }]);
+
+      if (wasEmptyCaretLine && nextLines.length > 1) {
+        editor.setPosition({
+          lineNumber: startLine + 1,
+          column: nextLines[1].length + 1
+        });
+      }
+      editor.focus();
+    }
+
+    function applyMarkdownAlert(alertType) {
+      replaceSelectedLines('deco-alert-' + String(alertType || 'remove').toLowerCase(), function (lines) {
+        if (alertType) { return transformMarkdownAlertLines(lines, alertType); }
+        return removeMarkdownAlertLines(lines);
+      });
+    }
+
+    function setupAlertDropdown() {
+      var btn = btns.alert;
+      if (!btn) { return; }
+      if (fmt !== 'markdown') {
+        btn.style.display = 'none';
+        return;
+      }
+
+      var menu = null;
+      var menuOpen = false;
+      var options = [
+        { value: 'NOTE', label: t('alert_note', 'NOTE') },
+        { value: 'TIP', label: t('alert_tip_item', 'TIP') },
+        { value: 'IMPORTANT', label: t('alert_important', 'IMPORTANT') },
+        { value: 'WARNING', label: t('alert_warning', 'WARNING') },
+        { value: 'CAUTION', label: t('alert_caution', 'CAUTION') },
+        { value: null, label: t('alert_remove', 'Remove alert'), remove: true }
+      ];
+
+      function buildMenu() {
+        var m = document.createElement('div');
+        m.className = 'monaco-alert-menu';
+        m.setAttribute('role', 'menu');
+
+        options.forEach(function (option) {
+          var item = document.createElement('button');
+          item.type = 'button';
+          item.className = 'monaco-alert-menu-item';
+          if (option.remove) { item.classList.add('monaco-alert-menu-item--remove'); }
+          item.setAttribute('role', 'menuitem');
+          item.textContent = option.label;
+          item.addEventListener('mousedown', function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+          });
+          item.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            closeMenu();
+            applyMarkdownAlert(option.value);
+          });
+          m.appendChild(item);
+        });
+
+        return m;
+      }
+
+      function openMenu() {
+        if (!menu) { menu = buildMenu(); }
+        if (!wrapper.contains(menu)) { wrapper.appendChild(menu); }
+
+        var btnRect = btn.getBoundingClientRect();
+        var wrapperRect = wrapper.getBoundingClientRect();
+        menu.style.display = 'block';
+        menu.style.top = (btnRect.bottom - wrapperRect.top + 4) + 'px';
+
+        var left = btnRect.left - wrapperRect.left;
+        var maxLeft = Math.max(4, wrapperRect.width - menu.offsetWidth - 4);
+        menu.style.left = Math.max(4, Math.min(left, maxLeft)) + 'px';
+
+        menuOpen = true;
+        btn.classList.add('active');
+        btn.setAttribute('aria-expanded', 'true');
+
+        setTimeout(function () {
+          document.addEventListener('mousedown', onDocumentMouseDown, true);
+          document.addEventListener('keydown', onDocumentKeyDown, true);
+        }, 0);
+      }
+
+      function closeMenu() {
+        if (!menuOpen) { return; }
+        menuOpen = false;
+        if (menu) { menu.style.display = 'none'; }
+        btn.classList.remove('active');
+        btn.setAttribute('aria-expanded', 'false');
+        document.removeEventListener('mousedown', onDocumentMouseDown, true);
+        document.removeEventListener('keydown', onDocumentKeyDown, true);
+      }
+
+      function onDocumentMouseDown(ev) {
+        if (menu && (menu.contains(ev.target) || btn.contains(ev.target))) { return; }
+        closeMenu();
+      }
+
+      function onDocumentKeyDown(ev) {
+        if (ev.key === 'Escape') { closeMenu(); }
+      }
+
+      btn.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (menuOpen) { closeMenu(); } else { openMenu(); }
+      });
     }
 
     // コードブロック挿入。フォーマットにより記法が異なる。
@@ -4286,6 +4525,7 @@
 
     // ---- ハンドラ登録（すべて記法テーブル経由） ----
     setupMarkdownListEditing();
+    setupAlertDropdown();
     btns.bold.addEventListener('click', function () { applyWrap('bold'); });
     btns.italic.addEventListener('click', function () { applyWrap('italic'); });
     btns.underline.addEventListener('click', function () { applyWrap('underline'); });

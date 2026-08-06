@@ -64,6 +64,8 @@ module RedmineMonacoEditor
       mode_preview_tip outline_tip fullscreen_tip
       bold_tip italic_tip underline_tip strike_tip code_inline_tip
       h1_tip h2_tip h3_tip h4_tip ul_tip ol_tip blockquote_tip code_block_tip
+      alert_tip alert_note alert_tip_item alert_important alert_warning
+      alert_caution alert_remove
       table_tip image_tip file_link_tip
       placeholder_text placeholder_code
       preview_loading preview_failed preview_url_missing
