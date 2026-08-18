@@ -2354,6 +2354,22 @@
       }
     });
 
+    // Redmine tracks bubbled textarea change events to warn about unsaved edits.
+    // Monaco's hidden IME textarea can emit change on blur after Japanese input,
+    // which can re-arm that warning during a legitimate form submission.
+    // Keep the event inside Monaco while leaving the original Redmine textarea
+    // and its unsaved-change tracking untouched.
+    var editorDomNode = editor.getDomNode();
+    if (editorDomNode) {
+      editorDomNode.addEventListener('change', function (event) {
+        var target = event.target;
+        if (target && target.tagName === 'TEXTAREA' && target.classList.contains('inputarea')) {
+          event.stopPropagation();
+        }
+      });
+    }
+
+
     // 生成直後はコンテナサイズが未確定で中身が描画されないことがあるため、
     // 複数の手段で layout() を確実に呼んで初期表示を確定させる。
     requestAnimationFrame(function () {
