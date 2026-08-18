@@ -7294,7 +7294,9 @@
     return /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?)$/i.test(file.name || '');
   }
 
-  // クリップボードから画像Fileを集める(files と items の両対応・重複除外)。
+  // Prefer clipboardData.files and use items only as a fallback.
+  // Some Office applications expose the same image through both collections as
+  // separate File objects, so merging them can upload the same image twice.
   function collectClipboardImages(cd) {
     var out = [];
     var seen = {};
@@ -7307,6 +7309,7 @@
     }
     if (cd.files) {
       for (var i = 0; i < cd.files.length; i++) { push(cd.files[i]); }
+      if (out.length > 0) { return out; }
     }
     if (cd.items) {
       for (var j = 0; j < cd.items.length; j++) {
@@ -7602,17 +7605,38 @@
     return rows;
   }
 
-  function insertTableMarkup(editor, text, source) {
-    if (!text) { return false; }
+  function insertPasteText(editor, text, source) {
+    if (!text) { return null; }
     var sel = editor.getSelection();
-    if (!sel) { return false; }
-    editor.executeEdits(source || 'paste-table', [{
+    if (!sel) { return null; }
+
+    var normalized = String(text).replace(/\r\n|\r/g, '\n');
+    editor.executeEdits(source || 'paste-text', [{
       range: sel,
-      text: text,
+      text: normalized,
       forceMoveMarkers: true
     }]);
+
+    // Keep a stable insertion point for image markup that follows text from the
+    // same clipboard payload. This avoids relying on Monaco's cursor transform.
+    var lines = normalized.split('\n');
+    var endLineNumber = sel.startLineNumber + lines.length - 1;
+    var endColumn = lines.length === 1
+      ? sel.startColumn + lines[0].length
+      : lines[lines.length - 1].length + 1;
+    var endSelection = {
+      startLineNumber: endLineNumber,
+      startColumn: endColumn,
+      endLineNumber: endLineNumber,
+      endColumn: endColumn
+    };
+    editor.setSelection(endSelection);
     editor.focus();
-    return true;
+    return endSelection;
+  }
+
+  function insertTableMarkup(editor, text, source) {
+    return insertPasteText(editor, text, source);
   }
 
   // document レベルの paste ハンドラ（ページに1つだけ設置）。
@@ -7624,17 +7648,24 @@
     var ctx = focusedPasteEditor();
     if (!ctx) { return; }
 
-    // 1. 画像の処理（添付可能な画面のみ）
-    if (hasAttachmentTarget(ctx)) {
-      var images = collectClipboardImages(cd);
-      if (images.length > 0) {
+    // Keep image data available while allowing text/table content from the same
+    // clipboard payload to be inserted first. Office applications often expose
+    // both a textual representation and an image representation for one copy.
+    var images = hasAttachmentTarget(ctx) ? collectClipboardImages(cd) : [];
+    var hasImages = images.length > 0;
+
+    function finishHandledPaste(imageSelection) {
+      if (hasImages) {
         processImageBatch(ctx, images, {
           renameAsClipboard: true,
-          source: 'paste-image'
+          source: 'paste-image',
+          selection: imageSelection || null
         });
-        e.preventDefault();
-        e.stopPropagation();
-        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      if (hasImages && typeof e.stopImmediatePropagation === 'function') {
+        e.stopImmediatePropagation();
       }
     }
 
@@ -7651,7 +7682,7 @@
         var clone = temp.cloneNode(true);
         // メタデータ等を無視して、テーブル以外のテキストが残っていないか確認
         clone.querySelectorAll('meta, style, link, title, table').forEach(function(el) { el.remove(); });
-        
+
         if (clone.textContent.trim() === '') {
           var table = tables[0];
           var rows = [];
@@ -7674,7 +7705,7 @@
           if (rows.length >= 2) {
             var maxColumns = 0;
             rows.forEach(function(row) { maxColumns = Math.max(maxColumns, row.length); });
-            
+
             if (maxColumns >= 2) {
               // 足りない列を空文字で埋める
               rows.forEach(function(row) {
@@ -7682,9 +7713,9 @@
               });
 
               var htmlTableText = tableRowsToMarkup(rows, ctx.fmt);
-              if (insertTableMarkup(ctx.editor, htmlTableText, 'paste-html-table')) {
-                e.preventDefault();
-                e.stopPropagation();
+              var htmlTableEnd = insertTableMarkup(ctx.editor, htmlTableText, 'paste-html-table');
+              if (htmlTableEnd) {
+                finishHandledPaste(htmlTableEnd);
                 return;
               }
             }
@@ -7699,11 +7730,20 @@
     var tsvRows = parseTsvRows(plain);
     if (tsvRows) {
       var tsvTableText = tableRowsToMarkup(tsvRows, ctx.fmt);
-      if (insertTableMarkup(ctx.editor, tsvTableText, 'paste-tsv-table')) {
-        e.preventDefault();
-        e.stopPropagation();
+      var tsvTableEnd = insertTableMarkup(ctx.editor, tsvTableText, 'paste-tsv-table');
+      if (tsvTableEnd) {
+        finishHandledPaste(tsvTableEnd);
         return;
       }
+    }
+
+    // If images accompany ordinary text, paste the text explicitly before the
+    // image references. Without this branch, preventing the native paste event
+    // for image upload discards the textual representation from Office apps.
+    if (hasImages) {
+      var textEnd = plain ? insertPasteText(ctx.editor, plain, 'paste-text-with-image') : null;
+      finishHandledPaste(textEnd);
+      return;
     }
 
     // 4. 上記に該当しない（画像でも表でもない）場合はMonacoの通常ペーストに任せる
