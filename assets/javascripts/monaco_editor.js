@@ -2185,6 +2185,7 @@
     //   title : ホバー時のツールチップ
     //   wide  : H1〜H4のように横長アイコンのボタンか（任意）
     //   sepAfter: このボタンの後に区切り線を入れるか（任意）
+    //   hidden: ツールバーには表示しない（機能自体は残す）
     var DECO_BUTTON_DEFS = [
       { key: 'bold',       icon: ICON_BOLD,        title: t('bold_tip', 'Bold (Ctrl+B)') },
       { key: 'italic',     icon: ICON_ITALIC,      title: t('italic_tip', 'Italic (Ctrl+I)') },
@@ -2201,7 +2202,8 @@
       { key: 'alert',      icon: ICON_ALERT,       title: t('alert_tip', 'Insert alert'), wide: true },
       { key: 'codeBlock',  icon: ICON_CODE_BLOCK,  title: t('code_block_tip', 'Code block'), sepAfter: true },
       { key: 'table',        icon: ICON_TABLE,         title: t('table_tip', 'Insert table') },
-      { key: 'tableBuilder', icon: ICON_TABLE_BUILDER, title: t('table_builder_tip', 'Open table builder') },
+      // 新規表は「表を挿入」→ 本文の表アイコン → 「更新」で編集する。
+      { key: 'tableBuilder', icon: ICON_TABLE_BUILDER, title: t('table_builder_tip', 'Open table builder'), hidden: true },
       { key: 'image',      icon: ICON_IMAGE,       title: t('image_tip', 'Insert image') },
       { key: 'fileLink',   icon: ICON_ATTACH,      title: t('file_link_tip', 'Insert file link'), sepAfter: true },
       { key: 'macro',      icon: ICON_MACRO,       title: t('macro_tip', 'Insert macro {{ }}') },
@@ -2212,6 +2214,7 @@
     // decoToolbar へ順に追加する。区切り線も定義に従って挿入する。
     var decoBtns = {};
     DECO_BUTTON_DEFS.forEach(function (def) {
+      if (def.hidden) { return; }
       var b = makeDecoBtn(def.icon, def.title);
       if (def.wide) { b.classList.add('monaco-deco-btn-wide'); }
       if (def.key === 'alert') {
@@ -4556,6 +4559,7 @@
     btns.blockquote.addEventListener('click', applyBlockquote);
     btns.codeBlock.addEventListener('click', applyCodeBlock);
     setupTableGridPicker(btns.table, editor, textarea);
+    // 独立ボタンは非表示でも、既存表の glyph から表ビルダーを開ける。
     setupTableBuilder(btns.tableBuilder, editor, textarea, wrapper);
     setupImagePicker(btns.image, editor, textarea);
     setupFileLinkPicker(btns.fileLink, editor, textarea);
@@ -4765,8 +4769,9 @@
   // ============================================================
   // 表ビルダー（Table Builder）
   // ============================================================
-  // ツールバーの「表ビルダー」ボタン押下で、エディタ wrapper 上に
+  // 本文中の表の glyph アイコンから、エディタ wrapper 上に
   // Excelライクな表編集パネルをオーバーレイ表示する。
+  // ツールバーの新規起動ボタンは非表示だが、再表示にも対応する。
   //
   //   - 本体は public_dist/table-builder/index.js（ESM）。初回押下時に
   //     動的 import で遅延ロードする（編集画面を開いただけでは読み込まない）。
@@ -4856,7 +4861,7 @@
       return apiPromise;
     }
 
-    // ツールバーボタン: 新規の表ビルダーを開く（従来どおり）。
+    // ツールバーボタンがある場合だけ新規の表ビルダーを開ける。
     if (btn) {
       btn.addEventListener('click', function () {
         ensureApi().then(function (api) { api.open(); }).catch(function () { /* ログ済み */ });
